@@ -1,0 +1,66 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files with secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Expo
+.expo/
+dist/
+web-build/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+
+# Build outputs
+build/
+*.apk
+*.aab
+*.ipa
+*.app
+
+# Metro
+.metro-health-check*
+
+# Native build folders
+ios/Pods/
+ios/build/
+android/build/
+android/app/build/
+android/.gradle/
+
+# Debug
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+__tests__/__snapshots__/
+
+# Temp files
+*.tmp
+*.temp
+.cache/
+
+# Supabase local config (contains passwords)
+supabase/.env
+supabase/.temp/

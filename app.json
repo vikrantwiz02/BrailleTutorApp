@@ -1,0 +1,63 @@
+{
+  "expo": {
+    "name": "Braille Tutor",
+    "slug": "braille-tutor-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1A1A2E"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.brailletutor.app",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "We need Bluetooth to connect to your Braille Plotter device",
+        "NSMicrophoneUsageDescription": "We need microphone access for voice commands and AI tutor interaction",
+        "NSSpeechRecognitionUsageDescription": "We use speech recognition for hands-free braille learning",
+        "UIBackgroundModes": ["audio", "bluetooth-central"]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1A1A2E"
+      },
+      "package": "com.brailletutor.app",
+      "permissions": [
+        "BLUETOOTH",
+        "BLUETOOTH_ADMIN",
+        "BLUETOOTH_CONNECT",
+        "BLUETOOTH_SCAN",
+        "RECORD_AUDIO",
+        "ACCESS_FINE_LOCATION",
+        "VIBRATE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-av",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "15.1"
+          },
+          "android": {
+            "compileSdkVersion": 34,
+            "targetSdkVersion": 34,
+            "minSdkVersion": 24
+          }
+        }
+      ]
+    ]
+  }
+}
