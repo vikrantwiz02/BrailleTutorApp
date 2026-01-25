@@ -19,10 +19,22 @@ module.exports = function withAndroidManifestFix(config) {
       androidManifest.$['xmlns:tools'] = 'http://schemas.android.com/tools';
     }
 
-    // Add tools:overrideLibrary to handle package conflicts from dependencies
-    if (!androidManifest.$['tools:overrideLibrary']) {
-      androidManifest.$['tools:overrideLibrary'] = 'com.airbnb.android.react.lottie';
+    // Add tools:replace to handle package attribute conflicts at root manifest level
+    if (!androidManifest.$['tools:replace']) {
+      androidManifest.$['tools:replace'] = 'android:appComponentFactory,package';
     }
+
+    // Add tools:overrideLibrary to allow all library manifests to merge
+    const overrideLibraries = [
+      'com.airbnb.android.react.lottie',
+      'com.reactnativecommunity.asyncstorage',
+      'it.innove',
+      'com.reactnativecommunity.netinfo',
+      'com.th3rdwave.safeareacontext',
+      'com.oblador.vectoricons',
+      'com.wenkesj.voice'
+    ];
+    androidManifest.$['tools:overrideLibrary'] = overrideLibraries.join(',');
 
     // Find the application element
     if (androidManifest.application && androidManifest.application[0]) {
@@ -31,13 +43,6 @@ module.exports = function withAndroidManifestFix(config) {
       // Initialize application.$ if it doesn't exist
       if (!application.$) {
         application.$ = {};
-      }
-      
-      // Add tools:replace for appComponentFactory
-      if (!application.$['tools:replace']) {
-        application.$['tools:replace'] = 'android:appComponentFactory';
-      } else if (!application.$['tools:replace'].includes('appComponentFactory')) {
-        application.$['tools:replace'] += ',android:appComponentFactory';
       }
       
       // Ensure appComponentFactory uses AndroidX
