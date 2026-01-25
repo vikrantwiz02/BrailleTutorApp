@@ -4,16 +4,31 @@ module.exports = function withAndroidManifestFix(config) {
   return withAndroidManifest(config, async (config) => {
     const androidManifest = config.modResults;
 
+    // Ensure manifest has proper structure
+    if (!androidManifest) {
+      return config;
+    }
+
+    // Initialize $ if it doesn't exist
+    if (!androidManifest.$) {
+      androidManifest.$ = {};
+    }
+
     // Add tools namespace if not present
     if (!androidManifest.$['xmlns:tools']) {
       androidManifest.$['xmlns:tools'] = 'http://schemas.android.com/tools';
     }
 
     // Find the application element
-    const application = androidManifest.application[0];
-    
-    // Add tools:replace for appComponentFactory
-    if (application) {
+    if (androidManifest.application && androidManifest.application[0]) {
+      const application = androidManifest.application[0];
+      
+      // Initialize application.$ if it doesn't exist
+      if (!application.$) {
+        application.$ = {};
+      }
+      
+      // Add tools:replace for appComponentFactory
       if (!application.$['tools:replace']) {
         application.$['tools:replace'] = 'android:appComponentFactory';
       } else if (!application.$['tools:replace'].includes('appComponentFactory')) {
