@@ -19,6 +19,11 @@ module.exports = function withAndroidManifestFix(config) {
       androidManifest.$['xmlns:tools'] = 'http://schemas.android.com/tools';
     }
 
+    // Add tools:overrideLibrary to handle package conflicts from dependencies
+    if (!androidManifest.$['tools:overrideLibrary']) {
+      androidManifest.$['tools:overrideLibrary'] = 'com.airbnb.android.react.lottie';
+    }
+
     // Find the application element
     if (androidManifest.application && androidManifest.application[0]) {
       const application = androidManifest.application[0];
