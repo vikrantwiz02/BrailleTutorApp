@@ -29,8 +29,7 @@
     "preview-apk": {
       "distribution": "internal",
       "android": {
-        "buildType": "apk",
-        "gradleCommand": ":app:assembleRelease"
+        "buildType": "apk"
       },
       "env": {
         "APP_ENV": "preview",
