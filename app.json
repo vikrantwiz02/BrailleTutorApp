@@ -21,7 +21,10 @@
         "NSBluetoothAlwaysUsageDescription": "We need Bluetooth to connect to your Braille Plotter device",
         "NSMicrophoneUsageDescription": "We need microphone access for voice commands and AI tutor interaction",
         "NSSpeechRecognitionUsageDescription": "We use speech recognition for hands-free braille learning",
-        "UIBackgroundModes": ["audio", "bluetooth-central"]
+        "UIBackgroundModes": [
+          "audio",
+          "bluetooth-central"
+        ]
       }
     },
     "android": {
@@ -37,7 +40,9 @@
         "BLUETOOTH_SCAN",
         "RECORD_AUDIO",
         "ACCESS_FINE_LOCATION",
-        "VIBRATE"
+        "VIBRATE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
       ]
     },
     "web": {
@@ -58,6 +63,11 @@
           }
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "339b15a0-e6f6-4b1d-8859-f73fa5d509d9"
+      }
+    }
   }
 }
