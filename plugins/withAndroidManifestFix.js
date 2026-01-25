@@ -19,12 +19,7 @@ module.exports = function withAndroidManifestFix(config) {
       androidManifest.$['xmlns:tools'] = 'http://schemas.android.com/tools';
     }
 
-    // Add tools:replace to handle package attribute conflicts at root manifest level
-    if (!androidManifest.$['tools:replace']) {
-      androidManifest.$['tools:replace'] = 'android:appComponentFactory,package';
-    }
-
-    // Add tools:overrideLibrary to allow all library manifests to merge
+    // Add tools:overrideLibrary to allow all library manifests to merge despite package conflicts
     const overrideLibraries = [
       'com.airbnb.android.react.lottie',
       'com.reactnativecommunity.asyncstorage',
@@ -44,6 +39,9 @@ module.exports = function withAndroidManifestFix(config) {
       if (!application.$) {
         application.$ = {};
       }
+      
+      // Add tools:replace for appComponentFactory at application level
+      application.$['tools:replace'] = 'android:appComponentFactory';
       
       // Ensure appComponentFactory uses AndroidX
       application.$['android:appComponentFactory'] = 'androidx.core.app.CoreComponentFactory';
