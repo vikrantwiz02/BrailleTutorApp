@@ -9,23 +9,32 @@ buildscript {
     }
 }
 
-// Force exclude old Android Support Library dependencies
-configurations.all {
-    exclude group: 'com.android.support', module: 'support-v4'
-    exclude group: 'com.android.support', module: 'support-compat'
-    exclude group: 'com.android.support', module: 'support-annotations'
-    exclude group: 'com.android.support', module: 'animated-vector-drawable'
-    exclude group: 'com.android.support', module: 'support-vector-drawable'
-    exclude group: 'com.android.support', module: 'versionedparcelable'
-}
-
-allprojects {
+// Force exclude old Android Support Library dependencies at root level
+subprojects {
     configurations.all {
+        resolutionStrategy {
+            force 'androidx.core:core:1.16.0'
+            force 'androidx.appcompat:appcompat:1.7.0'
+        }
         exclude group: 'com.android.support', module: 'support-v4'
         exclude group: 'com.android.support', module: 'support-compat'
         exclude group: 'com.android.support', module: 'support-annotations'
         exclude group: 'com.android.support', module: 'animated-vector-drawable'
         exclude group: 'com.android.support', module: 'support-vector-drawable'
         exclude group: 'com.android.support', module: 'versionedparcelable'
+    }
+    
+    afterEvaluate { project ->
+        if (project.hasProperty('android')) {
+            project.android {
+                compileSdkVersion 34
+                buildToolsVersion "36.0.0"
+                
+                defaultConfig {
+                    minSdkVersion 24
+                    targetSdkVersion 34
+                }
+            }
+        }
     }
 }
