@@ -16,8 +16,7 @@
     "build:ios": "eas build --platform ios",
     "build:all": "eas build --platform all",
     "submit:android": "eas submit --platform android",
-    "submit:ios": "eas submit --platform ios",
-    "postinstall": "node scripts/fix-android-manifests.js"
+    "submit:ios": "eas submit --platform ios"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

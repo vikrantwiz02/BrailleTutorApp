@@ -11,6 +11,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, SPACING, RADIUS, TYPOGRAPHY, SHADOWS } from '../../theme';
 import { RootState, AppDispatch } from '../../store';
 import { updateStats } from '../../store/slices/analyticsSlice';
@@ -46,6 +47,7 @@ const LESSON_LEVELS = ['Beginner', 'Intermediate', 'Advanced', 'Expert'];
 
 export const ProgressScreen: React.FC<Props> = ({ navigation }) => {
   const dispatch = useDispatch<AppDispatch>();
+  const insets = useSafeAreaInsets();
   const { completed: completedLessons = [] } = useSelector((state: RootState) => state.lessons);
   const { stats } = useSelector((state: RootState) => state.analytics);
 
@@ -182,7 +184,7 @@ export const ProgressScreen: React.FC<Props> = ({ navigation }) => {
         {/* Header */}
         <LinearGradient
           colors={[EDU_COLORS.slateGray, EDU_COLORS.deepSlate]}
-          style={styles.header}
+          style={[styles.header, { paddingTop: insets.top + 16 }]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
         >

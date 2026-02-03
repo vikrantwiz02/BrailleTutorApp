@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Platform,
   Animated,
+  StatusBar,
 } from 'react-native';
 import { useSelector, useDispatch } from 'react-redux';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
@@ -14,6 +15,7 @@ import { CompositeNavigationProp, useFocusEffect } from '@react-navigation/nativ
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, SPACING, RADIUS, TYPOGRAPHY, SHADOWS } from '../../theme';
 import { RootState, AppDispatch } from '../../store';
 import { MainTabParamList } from '../../navigation/MainTabNavigator';
@@ -32,6 +34,7 @@ interface Props {
 
 export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   const dispatch = useDispatch<AppDispatch>();
+  const insets = useSafeAreaInsets();
   const { user } = useSelector((state: RootState) => state.auth);
   const { completed: completedLessons = [], completedIds = [], current: currentLesson, currentStep, totalSteps, stats: lessonStats } = useSelector((state: RootState) => state.lessons);
   const { stats } = useSelector((state: RootState) => state.analytics);
@@ -128,7 +131,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         
         <LinearGradient
           colors={[EDU_COLORS.slateGray, EDU_COLORS.deepSlate]}
-          style={styles.header}
+          style={[styles.header, { paddingTop: insets.top + 16 }]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
         >

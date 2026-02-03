@@ -11,6 +11,7 @@ import {
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../../navigation/RootNavigator';
 import { notificationService, voiceService, type AppNotification } from '../../services';
 
@@ -65,8 +66,7 @@ const formatTime = (date: Date): string => {
   return date.toLocaleDateString();
 };
 
-export const NotificationsScreen: React.FC<Props> = ({ navigation }) => {
-  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+export const NotificationsScreen: React.FC<Props> = ({ navigation }) => {  const insets = useSafeAreaInsets();  const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const fadeAnim = useState(new Animated.Value(0))[0];
 
   useEffect(() => {
@@ -116,7 +116,7 @@ export const NotificationsScreen: React.FC<Props> = ({ navigation }) => {
         style={styles.background}
       >
         {/* Header */}
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
           <TouchableOpacity 
             onPress={() => navigation.goBack()} 
             style={styles.backButton}

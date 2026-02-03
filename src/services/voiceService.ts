@@ -6,55 +6,49 @@ import { CONFIG } from '../config';
 // Voice recognition import (lazy loaded)
 let Voice: any = null;
 
-// Check if running in Expo Go by checking if native Voice module exists
-// In Expo Go, native modules like Voice won't be linked
-const checkNativeVoiceAvailable = (): boolean => {
-  try {
-    // Check if the native Voice module is available
-    const { Voice: NativeVoice } = NativeModules;
-    return !!NativeVoice;
-  } catch {
-    return false;
-  }
-};
+// We'll check availability when actually trying to use it,
+// not at module load time (which can fail prematurely)
 
-const nativeVoiceAvailable = checkNativeVoiceAvailable();
-
-// Premium/natural voice identifiers for different platforms
+// Premium/natural voice identifiers for different platforms and languages
 // These are high-quality neural/enhanced voices that sound more human
 const PREFERRED_VOICES = {
-  ios: [
-    // Siri voices (most natural)
-    'com.apple.voice.premium.en-US.Zoe',
-    'com.apple.voice.premium.en-US.Ava',
-    'com.apple.voice.premium.en-IN.Rishi',
-    'com.apple.ttsbundle.siri_female_en-US_compact',
-    'com.apple.ttsbundle.siri_male_en-US_compact',
-    'com.apple.ttsbundle.Samantha-premium',
-    'com.apple.ttsbundle.Samantha-compact',
-    // Enhanced voices
-    'com.apple.voice.enhanced.en-US.Samantha',
-    'com.apple.voice.enhanced.en-US.Alex',
-    // Standard quality voices
-    'Samantha',
-    'Karen',
-    'Daniel',
-  ],
-  android: [
-    // Google Neural2 voices (most natural)
-    'en-us-x-iob-network',
-    'en-us-x-iog-network',
-    'en-us-x-sfg-network',
-    'en-us-x-tpd-network',
-    // Google high quality voices
-    'en-us-x-sfg-local',
-    'en-us-x-iob-local',
-    'en-US-language',
-    // Samsung voices
-    'Samsung',
-    // Default Google voice
-    'en-us',
-  ],
+  ios: {
+    'en-US': [
+      'com.apple.voice.premium.en-US.Zoe',
+      'com.apple.voice.premium.en-US.Ava',
+      'com.apple.ttsbundle.siri_female_en-US_compact',
+      'com.apple.voice.enhanced.en-US.Samantha',
+      'Samantha',
+    ],
+    'hi-IN': [
+      'com.apple.voice.premium.hi-IN.Rishi',
+      'com.apple.voice.enhanced.hi-IN.Lekha',
+      'Lekha',
+    ],
+    'es-ES': [
+      'com.apple.voice.premium.es-ES.Monica',
+      'com.apple.voice.enhanced.es-ES.Monica',
+      'Monica',
+    ],
+  },
+  android: {
+    'en-US': [
+      'en-us-x-iob-network',
+      'en-us-x-iog-network',
+      'en-us-x-sfg-network',
+      'en-US-language',
+    ],
+    'hi-IN': [
+      'hi-in-x-hia-network',
+      'hi-in-x-hid-network',
+      'hi-IN-language',
+    ],
+    'es-ES': [
+      'es-es-x-eea-network',
+      'es-es-x-eed-network',
+      'es-ES-language',
+    ],
+  },
 };
 
 export interface VoiceSettings {
@@ -73,6 +67,19 @@ export interface SpeechResult {
 
 type VoiceEventCallback = (event: string, data: any) => void;
 
+// Language mapping
+const LANGUAGE_MAP: Record<string, string> = {
+  'English': 'en-US',
+  'Hindi': 'hi-IN',
+  'Spanish': 'es-ES',
+  'en-US': 'en-US',
+  'hi-IN': 'hi-IN',
+  'es-ES': 'es-ES',
+};
+
+// Store reference to get current language from Redux
+let languageGetter: (() => string) | null = null;
+
 class VoiceService {
   private isListening: boolean = false;
   private eventListeners: VoiceEventCallback[] = [];
@@ -80,7 +87,7 @@ class VoiceService {
   private isVoiceInitialized: boolean = false;
   private _voiceEnabled: boolean = true;
   private _autoAnnounce: boolean = true;
-  private voiceRecognitionAvailable: boolean = nativeVoiceAvailable;
+  private voiceRecognitionAvailable: boolean = false;
   private selectedVoice: string | null = null;
   private availableVoices: Speech.Voice[] = [];
   private voiceInitialized: boolean = false;
@@ -94,14 +101,29 @@ class VoiceService {
       rate: 0.85,
       volume: 1.0,
     };
-    // Initialize voice selection
-    this.initializeBestVoice();
+    // Don't initialize voice here - wait until first speak() call
+    // so we have the correct language from Redux
   }
 
-  // Initialize and select the best available voice
-  private async initializeBestVoice(): Promise<void> {
-    if (this.voiceInitialized) return;
-    
+  // Set language getter function (called from App.tsx with Redux store)
+  setLanguageGetter(getter: () => string): void {
+    languageGetter = getter;
+  }
+
+  // Get current language from Redux or fallback
+  private getCurrentLanguage(): string {
+    if (languageGetter) {
+      const lang = languageGetter();
+      const mapped = LANGUAGE_MAP[lang] || lang || 'en-US';
+      console.log(`Language from Redux: ${lang} -> ${mapped}`);
+      return mapped;
+    }
+    console.log(`No language getter, using default: ${this.currentSettings.language}`);
+    return this.currentSettings.language;
+  }
+
+  // Initialize and select the best available voice for a language
+  private async initializeBestVoice(language: string = 'en-US'): Promise<void> {
     try {
       this.availableVoices = await Speech.getAvailableVoicesAsync();
       
@@ -110,11 +132,10 @@ class VoiceService {
         return;
       }
 
-      const preferredList = Platform.OS === 'ios' 
-        ? PREFERRED_VOICES.ios 
-        : PREFERRED_VOICES.android;
+      const platform = Platform.OS === 'ios' ? 'ios' : 'android';
+      const preferredList = PREFERRED_VOICES[platform][language] || PREFERRED_VOICES[platform]['en-US'];
 
-      // Try to find a premium/enhanced voice
+      // Try to find a premium/enhanced voice for the language
       for (const preferred of preferredList) {
         const found = this.availableVoices.find(v => 
           v.identifier?.toLowerCase().includes(preferred.toLowerCase()) ||
@@ -122,35 +143,22 @@ class VoiceService {
         );
         if (found) {
           this.selectedVoice = found.identifier;
-          console.log(`Selected voice: ${found.name || found.identifier}`);
+          console.log(`Selected voice for ${language}: ${found.name || found.identifier}`);
           this.voiceInitialized = true;
           return;
         }
       }
 
-      // Fallback: Find any English voice with good quality
-      const englishVoice = this.availableVoices.find(v => {
-        const lang = v.language?.toLowerCase() || '';
-        const name = v.name?.toLowerCase() || '';
-        const quality = v.quality || '';
-        return (
-          lang.startsWith('en') && 
-          (quality === 'Enhanced' || quality === 'Default' || name.includes('enhanced') || name.includes('premium'))
-        );
+      // Fallback: Find any voice matching the language
+      const langPrefix = language.split('-')[0].toLowerCase();
+      const langVoice = this.availableVoices.find(v => {
+        const voiceLang = v.language?.toLowerCase() || '';
+        return voiceLang.startsWith(langPrefix);
       });
 
-      if (englishVoice) {
-        this.selectedVoice = englishVoice.identifier;
-        console.log(`Selected fallback voice: ${englishVoice.name || englishVoice.identifier}`);
-      } else {
-        // Last resort: first English voice
-        const anyEnglish = this.availableVoices.find(v => 
-          v.language?.toLowerCase().startsWith('en')
-        );
-        if (anyEnglish) {
-          this.selectedVoice = anyEnglish.identifier;
-          console.log(`Selected basic voice: ${anyEnglish.name || anyEnglish.identifier}`);
-        }
+      if (langVoice) {
+        this.selectedVoice = langVoice.identifier;
+        console.log(`Selected fallback voice for ${language}: ${langVoice.name || langVoice.identifier}`);
       }
 
       this.voiceInitialized = true;
@@ -191,7 +199,7 @@ class VoiceService {
 
   // Check if voice recognition is available (requires development build)
   isVoiceRecognitionAvailable(): boolean {
-    return this.voiceRecognitionAvailable && nativeVoiceAvailable;
+    return this.voiceRecognitionAvailable;
   }
 
   // Initialize voice recognition
@@ -200,52 +208,85 @@ class VoiceService {
       return { success: this.voiceRecognitionAvailable, error: null };
     }
 
-    // Skip initialization if native Voice module is not available
-    if (!nativeVoiceAvailable) {
-      console.log('Voice recognition: Native module not available (requires development build)');
-      this.isVoiceInitialized = true;
-      this.voiceRecognitionAvailable = false;
-      return {
-        success: false,
-        error: 'Voice recognition not available. Create a development build for voice input features.'
-      };
-    }
-
     try {
-      // Only attempt to load Voice module if not already tried
+      // Try native Android voice recognition first
+      if (Platform.OS === 'android') {
+        const VoiceRecognitionModule = NativeModules.VoiceRecognition;
+        if (VoiceRecognitionModule) {
+          const available = await VoiceRecognitionModule.isAvailable();
+          if (available) {
+            console.log('Native voice recognition available!');
+            Voice = VoiceRecognitionModule;
+            
+            // Set up event listeners for native module
+            const { DeviceEventEmitter } = require('react-native');
+            
+            DeviceEventEmitter.addListener('onSpeechStart', () => {
+              this.onSpeechStart();
+            });
+            
+            DeviceEventEmitter.addListener('onSpeechEnd', () => {
+              this.onSpeechEnd();
+            });
+            
+            DeviceEventEmitter.addListener('onSpeechResults', (event: any) => {
+              this.onSpeechResults(event);
+            });
+            
+            DeviceEventEmitter.addListener('onSpeechPartialResults', (event: any) => {
+              this.onSpeechPartialResults(event);
+            });
+            
+            DeviceEventEmitter.addListener('onSpeechError', (event: any) => {
+              this.onSpeechError(event);
+            });
+            
+            console.log('Native voice event listeners registered');
+            
+            this.isVoiceInitialized = true;
+            this.voiceRecognitionAvailable = true;
+            return { success: true, error: null };
+          }
+        }
+      }
+
+      // Fallback: Try to load @react-native-voice/voice module
       if (!Voice) {
+        console.log('Attempting to load @react-native-voice/voice module...');
         const VoiceModule = await import('@react-native-voice/voice');
         Voice = VoiceModule.default;
 
-        // Verify Voice module is valid before setting handlers
+        // Verify Voice module is valid
         if (!Voice) {
           throw new Error('Voice module loaded but is undefined');
         }
 
-        // Set up event handlers - check they exist before setting
-        if (typeof Voice.onSpeechStart === 'undefined') {
-          throw new Error('Voice module missing required event handlers');
-        }
+        console.log('Voice module loaded successfully!');
 
+        // Set up event handlers
         Voice.onSpeechStart = this.onSpeechStart.bind(this);
         Voice.onSpeechEnd = this.onSpeechEnd.bind(this);
         Voice.onSpeechResults = this.onSpeechResults.bind(this);
         Voice.onSpeechPartialResults = this.onSpeechPartialResults.bind(this);
         Voice.onSpeechError = this.onSpeechError.bind(this);
+        
+        console.log('Voice event handlers registered');
       }
 
       this.isVoiceInitialized = true;
       this.voiceRecognitionAvailable = true;
+      console.log('Voice recognition is now available!');
       return { success: true, error: null };
     } catch (err) {
-      console.warn('Voice recognition not available:', (err as Error).message);
+      const errorMessage = (err as Error).message;
+      console.error('Failed to initialize voice recognition:', errorMessage);
       // Mark as initialized to avoid retry attempts
       this.isVoiceInitialized = true;
       this.voiceRecognitionAvailable = false;
       Voice = null;
       return { 
         success: false, 
-        error: 'Voice recognition not available - create a development build to enable voice features.' 
+        error: `Voice recognition not available. This feature requires microphone permissions.` 
       };
     }
   }
@@ -257,9 +298,16 @@ class VoiceService {
       return;
     }
 
-    // Ensure best voice is selected
-    if (!this.voiceInitialized) {
-      await this.initializeBestVoice();
+    // Get current language from Redux every time
+    const currentLang = this.getCurrentLanguage();
+    console.log(`Speaking in language: ${currentLang}`);
+    
+    // Always reinitialize voice if language changed OR not yet initialized
+    if (!this.voiceInitialized || currentLang !== this.currentSettings.language) {
+      console.log(`Initializing voice for ${currentLang} (was: ${this.currentSettings.language})`);
+      this.currentSettings.language = currentLang;
+      this.voiceInitialized = false;
+      await this.initializeBestVoice(currentLang);
     }
 
     // Stop any current speech
@@ -425,7 +473,7 @@ class VoiceService {
     if (!Voice) {
       return {
         success: false,
-        error: 'Voice recognition not available. Create a development build to enable voice features.'
+        error: 'Voice recognition not available. Please ensure microphone permissions are granted.'
       };
     }
 
@@ -434,14 +482,29 @@ class VoiceService {
     }
 
     try {
-      await Voice.start(this.currentSettings.language);
+      // Get current language
+      const currentLang = this.getCurrentLanguage();
+      console.log(`Starting voice recognition in language: ${currentLang}`);
+      
+      // Check if using native module or @react-native-voice/voice
+      if (Voice.startListening && typeof Voice.startListening === 'function') {
+        // Native Android module
+        await Voice.startListening(currentLang);
+      } else if (Voice.start && typeof Voice.start === 'function') {
+        // @react-native-voice/voice module
+        await Voice.start(currentLang);
+      } else {
+        throw new Error('No valid start method found on Voice module');
+      }
+      
       this.isListening = true;
       return { success: true, error: null };
     } catch (err) {
       console.error('Start listening error:', err);
+      this.isListening = false;
       return { 
         success: false, 
-        error: `Failed to start listening: ${(err as Error).message}` 
+        error: `Voice recognition failed: ${(err as Error).message}. Please ensure microphone permissions are granted.` 
       };
     }
   }
@@ -451,7 +514,14 @@ class VoiceService {
     if (!this.isListening || !Voice) return;
 
     try {
-      await Voice.stop();
+      // Check if using native module or @react-native-voice/voice
+      if (Voice.stopListening && typeof Voice.stopListening === 'function') {
+        // Native Android module
+        await Voice.stopListening();
+      } else if (Voice.stop && typeof Voice.stop === 'function') {
+        // @react-native-voice/voice module
+        await Voice.stop();
+      }
       this.isListening = false;
     } catch (err) {
       console.error('Stop listening error:', err);
@@ -463,7 +533,14 @@ class VoiceService {
     if (!Voice) return;
 
     try {
-      await Voice.cancel();
+      // Check if using native module or @react-native-voice/voice
+      if (Voice.cancelListening && typeof Voice.cancelListening === 'function') {
+        // Native Android module
+        await Voice.cancelListening();
+      } else if (Voice.cancel && typeof Voice.cancel === 'function') {
+        // @react-native-voice/voice module
+        await Voice.cancel();
+      }
       this.isListening = false;
     } catch (err) {
       console.error('Cancel listening error:', err);
@@ -476,8 +553,16 @@ class VoiceService {
   }
 
   // Update voice settings
-  updateSettings(settings: Partial<VoiceSettings>): void {
+  async updateSettings(settings: Partial<VoiceSettings>): Promise<void> {
+    const oldLanguage = this.currentSettings.language;
     this.currentSettings = { ...this.currentSettings, ...settings };
+    
+    // If language changed, reinitialize voice for new language
+    if (settings.language && settings.language !== oldLanguage) {
+      this.voiceInitialized = false;
+      await this.initializeBestVoice(settings.language);
+      console.log(`Voice updated for language: ${settings.language}`);
+    }
   }
 
   // Get current settings

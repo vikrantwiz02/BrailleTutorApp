@@ -13,6 +13,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp, useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootState, AppDispatch } from '../../store';
 import {
   nextStep,
@@ -56,6 +57,7 @@ const EDU_COLORS = {
 
 export const ActiveLessonScreen: React.FC<Props> = ({ navigation, route }) => {
   const dispatch = useDispatch<AppDispatch>();
+  const insets = useSafeAreaInsets();
   const { current: currentLesson, currentStep } = useSelector((state: RootState) => state.lessons);
   const { user } = useSelector((state: RootState) => state.auth);
   const { isListening, voiceEnabled } = useSelector((state: RootState) => state.tutor);
@@ -590,7 +592,7 @@ export const ActiveLessonScreen: React.FC<Props> = ({ navigation, route }) => {
   return (
     <View style={styles.container}>
       <LinearGradient colors={[EDU_COLORS.deepSlate, EDU_COLORS.slateGray]} style={styles.background}>
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
           <TouchableOpacity onPress={handleExit} style={styles.exitButton}><Ionicons name="close" size={24} color="#fff" /></TouchableOpacity>
           <View style={styles.headerCenter}>
             <Text style={styles.lessonName} numberOfLines={1}>{currentLesson.title}</Text>
@@ -618,7 +620,7 @@ export const ActiveLessonScreen: React.FC<Props> = ({ navigation, route }) => {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   background: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 50, paddingBottom: 16 },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 16 },
   exitButton: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 20 },
   headerCenter: { flex: 1, marginHorizontal: 12 },
   lessonName: { fontSize: 16, fontWeight: '600', color: '#fff', marginBottom: 4 },

@@ -13,6 +13,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, SPACING, RADIUS, TYPOGRAPHY, SHADOWS } from '../../theme';
 import { RootState } from '../../store';
 import { startLesson } from '../../store/slices/lessonsSlice';
@@ -48,6 +49,7 @@ const EDU_COLORS = {
 export const LessonDetailScreen: React.FC<Props> = ({ navigation, route }) => {
   const { lessonId, mode: initialMode } = route.params;
   const dispatch = useDispatch();
+  const insets = useSafeAreaInsets();
   const { available, completed } = useSelector(
     (state: RootState) => state.lessons
   );
@@ -141,7 +143,7 @@ export const LessonDetailScreen: React.FC<Props> = ({ navigation, route }) => {
         {/* Header - Matching HomeScreen Style */}
         <LinearGradient
           colors={[EDU_COLORS.slateGray, EDU_COLORS.deepSlate]}
-          style={styles.header}
+          style={[styles.header, { paddingTop: insets.top + 16 }]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
         >

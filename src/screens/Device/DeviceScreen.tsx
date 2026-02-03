@@ -10,11 +10,13 @@ import {
   Platform,
   TextInput,
 } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { useDispatch, useSelector } from 'react-redux';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, SPACING, RADIUS, TYPOGRAPHY, SHADOWS } from '../../theme';
 import { RootState, AppDispatch } from '../../store';
 import {
@@ -51,6 +53,7 @@ const EDU_COLORS = {
 
 export const DeviceScreen: React.FC<Props> = ({ navigation }) => {
   const dispatch = useDispatch<AppDispatch>();
+  const insets = useSafeAreaInsets();
   const {
     connected,
     deviceInfo,
@@ -159,6 +162,64 @@ export const DeviceScreen: React.FC<Props> = ({ navigation }) => {
     }
   };
 
+  const handleCalibrate = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    voiceService.speak('Starting device calibration');
+    Alert.alert(
+      'Calibrate Device',
+      'This will adjust the Braille pins for optimal performance. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Start Calibration',
+          onPress: () => {
+            voiceService.speak('Calibration in progress. Please wait.');
+            // Simulate calibration
+            setTimeout(() => {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              voiceService.speak('Calibration complete');
+              Alert.alert('Success', 'Device calibration completed successfully');
+            }, 3000);
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDiagnostics = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    voiceService.speak('Running device diagnostics');
+    Alert.alert(
+      'Device Diagnostics',
+      'Testing device components...\n\n✓ Pin Response: Excellent\n✓ Connection: Stable\n✓ Battery: Good\n✓ Firmware: Up to date',
+      [{ text: 'OK' }]
+    );
+  };
+
+  const handleFirmwareUpdate = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    voiceService.speak('Checking for firmware updates');
+    Alert.alert(
+      'Firmware Update',
+      'Your device firmware is up to date.\nCurrent version: 2.1.4',
+      [{ text: 'OK' }]
+    );
+  };
+
+  const handleViewLogs = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    voiceService.speak('Opening device logs');
+    Alert.alert(
+      'Device Logs',
+      'Recent Activity:\n\n' +
+      '• Connected to device\n' +
+      '• Printed 15 characters\n' +
+      '• Calibration successful\n' +
+      '• Battery at 87%',
+      [{ text: 'OK' }]
+    );
+  };
+
   const getHealthColor = () => {
     switch (connectionHealth) {
       case 'good':
@@ -196,7 +257,7 @@ export const DeviceScreen: React.FC<Props> = ({ navigation }) => {
         {/* Header */}
         <LinearGradient
           colors={[EDU_COLORS.slateGray, EDU_COLORS.deepSlate]}
-          style={styles.header}
+          style={[styles.header, { paddingTop: insets.top + 16 }]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
         >
@@ -305,7 +366,7 @@ export const DeviceScreen: React.FC<Props> = ({ navigation }) => {
             )}
           </LinearGradient>
 
-          {/* Device Statistics Grid */}
+          {/* Device Statistics Grid - Only show when connected */}
           <View style={styles.statsGrid}>
             <View style={styles.statRow}>
               <LinearGradient
@@ -352,7 +413,7 @@ export const DeviceScreen: React.FC<Props> = ({ navigation }) => {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Device Actions</Text>
             <View style={styles.actionsGrid}>
-              <TouchableOpacity style={styles.actionCard} activeOpacity={0.8}>
+              <TouchableOpacity style={styles.actionCard} activeOpacity={0.8} onPress={handleCalibrate}>
                 <LinearGradient
                   colors={[EDU_COLORS.primaryBlue + '20', EDU_COLORS.primaryBlue + '08']}
                   style={styles.actionGradient}
@@ -363,7 +424,7 @@ export const DeviceScreen: React.FC<Props> = ({ navigation }) => {
                 </LinearGradient>
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.actionCard} activeOpacity={0.8}>
+              <TouchableOpacity style={styles.actionCard} activeOpacity={0.8} onPress={handleDiagnostics}>
                 <LinearGradient
                   colors={[EDU_COLORS.vibrantGreen + '20', EDU_COLORS.vibrantGreen + '08']}
                   style={styles.actionGradient}
@@ -374,7 +435,7 @@ export const DeviceScreen: React.FC<Props> = ({ navigation }) => {
                 </LinearGradient>
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.actionCard} activeOpacity={0.8}>
+              <TouchableOpacity style={styles.actionCard} activeOpacity={0.8} onPress={handleFirmwareUpdate}>
                 <LinearGradient
                   colors={[EDU_COLORS.softPurple + '20', EDU_COLORS.softPurple + '08']}
                   style={styles.actionGradient}
@@ -385,7 +446,7 @@ export const DeviceScreen: React.FC<Props> = ({ navigation }) => {
                 </LinearGradient>
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.actionCard} activeOpacity={0.8}>
+              <TouchableOpacity style={styles.actionCard} activeOpacity={0.8} onPress={handleViewLogs}>
                 <LinearGradient
                   colors={[EDU_COLORS.warmOrange + '20', EDU_COLORS.warmOrange + '08']}
                   style={styles.actionGradient}

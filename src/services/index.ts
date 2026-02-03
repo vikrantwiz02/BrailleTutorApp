@@ -10,4 +10,6 @@ export { notificationService, type AppNotification } from './notificationService
 export { achievementService, type AchievementDefinition, ACHIEVEMENTS } from './achievementService';
 export { offlineSyncService, type OfflineQueueItem } from './offlineSyncService';
 export { conversationalAIService, type AppContext, type AICommandResult } from './conversationalAIService';
+export { translationService } from './translationService';
+export { customBLEService } from './customBLEService';
 export { logger } from './loggerService';

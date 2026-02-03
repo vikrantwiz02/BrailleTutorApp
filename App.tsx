@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { StatusBar, LogBox, View, Text, ActivityIndicator } from 'react-native';
+import { StatusBar, LogBox, View, Text, ActivityIndicator, Platform, PermissionsAndroid } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Provider } from 'react-redux';
 import { PersistGate } from 'redux-persist/integration/react';
@@ -8,7 +8,8 @@ import { store, persistor } from './src/store';
 import RootNavigator from './src/navigation/RootNavigator';
 import { COLORS } from './src/theme';
 import ErrorBoundary from './src/components/ErrorBoundary';
-import { offlineSyncService, bleDeviceService, voiceCommandService } from './src/services';
+import { offlineSyncService, bleDeviceService, voiceCommandService, voiceService } from './src/services';
+import translationService from './src/services/translationService';
 
 // Ignore specific warnings in development only
 if (__DEV__) {
@@ -30,15 +31,54 @@ export default function App() {
   const [servicesReady, setServicesReady] = useState(false);
 
   useEffect(() => {
+    // Set up language getter for voice service to access Redux language
+    voiceService.setLanguageGetter(() => {
+      const state = store.getState();
+      return state.settings?.language || 'English';
+    });
+
+    // Request all permissions on Android
+    const requestPermissions = async () => {
+      if (Platform.OS === 'android') {
+        try {
+          const permissions = [
+            PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+            PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+            PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+            PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+          ];
+          
+          // Add POST_NOTIFICATIONS for Android 13+
+          if (Platform.Version >= 33) {
+            permissions.push(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+          }
+          
+          const granted = await PermissionsAndroid.requestMultiple(permissions);
+          console.log('Permissions granted:', granted);
+        } catch (err) {
+          console.warn('Permission request error:', err);
+        }
+      }
+    };
+
     // Initialize app-level services
     const initializeServices = async () => {
       try {
+        // Request permissions first
+        await requestPermissions();
+        
+        // Initialize translation service with current language
+        const currentLanguage = store.getState().settings?.language || 'English';
+        translationService.setLanguage(currentLanguage);
+        console.log('Translation service initialized with language:', currentLanguage);
+        
         // Initialize offline sync for network monitoring
         await offlineSyncService.initialize();
         
         // Initialize BLE (will fail gracefully on simulator)
         try {
           await bleDeviceService.initialize();
+          console.log('BLE service initialized');
         } catch (bleError) {
           // BLE not available (simulator or unsupported device)
           console.log('BLE not available:', bleError);
@@ -76,7 +116,8 @@ export default function App() {
             <SafeAreaProvider>
               <StatusBar
                 barStyle="light-content"
-                backgroundColor={COLORS.background.primary}
+                backgroundColor="transparent"
+                translucent={true}
               />
               <RootNavigator />
             </SafeAreaProvider>

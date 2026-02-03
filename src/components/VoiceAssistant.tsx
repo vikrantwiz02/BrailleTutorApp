@@ -92,11 +92,25 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ isVisible = true
           }
         });
 
-        // Greet user on first launch
-        if (!hasGreeted && settings.autoAnnounce) {
+        // Greet user on first launch and start listening
+        if (!hasGreeted && settings.autoAnnounce && settings.voiceEnabled) {
           setTimeout(async () => {
             await conversationalAIService.greetUser();
             setHasGreeted(true);
+            
+            // Auto-start listening after greeting (wait for greeting to finish)
+            setTimeout(async () => {
+              const result = await voiceService.startListening();
+              if (result.success) {
+                setIsListening(true);
+                setShowTranscript(true);
+                Animated.timing(transcriptOpacity, {
+                  toValue: 1,
+                  duration: 200,
+                  useNativeDriver: true,
+                }).start();
+              }
+            }, 2000); // Wait 2 seconds for greeting to complete
           }, 1500);
         }
       }
@@ -256,6 +270,29 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ isVisible = true
       await voiceService.stopListening();
       setIsListening(false);
     } else {
+      // Check permissions first on Android
+      if (Platform.OS === 'android') {
+        try {
+          const { PermissionsAndroid } = require('react-native');
+          const granted = await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+            {
+              title: 'Microphone Permission',
+              message: 'Braille Tutor needs access to your microphone for voice commands',
+              buttonNeutral: 'Ask Me Later',
+              buttonNegative: 'Cancel',
+              buttonPositive: 'OK',
+            }
+          );
+          if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+            await voiceService.speak('Microphone permission denied. Please enable it in settings.');
+            return;
+          }
+        } catch (err) {
+          console.warn('Permission error:', err);
+        }
+      }
+      
       setTranscript('');
       setLastResponse('');
       const result = await voiceService.startListening();
@@ -271,8 +308,9 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ isVisible = true
         // Announce that we're listening
         AccessibilityInfo.announceForAccessibility('Listening');
       } else {
-        // Voice not available - provide feedback
-        await voiceService.speak("Voice input isn't available right now. Please try again after creating a development build.");
+        // Voice not available - provide feedback with more specific message
+        const message = result.error || "Voice input requires a development build with native modules. This feature isn't available in release builds yet.";
+        await voiceService.speak(message);
       }
     }
   };

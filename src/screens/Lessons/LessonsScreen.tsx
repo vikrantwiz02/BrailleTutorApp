@@ -14,13 +14,14 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import theme, { COLORS, SPACING, RADIUS, TYPOGRAPHY, SHADOWS } from '../../theme';
 import { RootState } from '../../store';
 import { fetchLessonsStart, ensureLessonsLoaded } from '../../store/slices/lessonsSlice';
 import { MainTabParamList } from '../../navigation/MainTabNavigator';
 import { RootStackParamList } from '../../navigation/RootNavigator';
 import { getAvailableLessons, getLessonStats } from '../../data';
-import { voiceCommandService, voiceService } from '../../services';
+import { voiceCommandService, voiceService, translationService } from '../../services';
 
 type LessonsScreenNavigationProp = CompositeNavigationProp<
   BottomTabNavigationProp<MainTabParamList, 'Lessons'>,
@@ -48,12 +49,49 @@ const EDU_COLORS = {
 
 export const LessonsScreen: React.FC<Props> = ({ navigation }) => {
   const dispatch = useDispatch();
+  const insets = useSafeAreaInsets();
   const { available, completed, loading } = useSelector(
     (state: RootState) => state.lessons
   );
+  const currentLanguage = useSelector((state: RootState) => state.settings?.language || 'English');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLevel, setSelectedLevel] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'all' | 'chapters'>('all');
+  const [translatedLessons, setTranslatedLessons] = useState<any[]>([]);
+
+  // Translate lessons when language or available lessons change
+  useEffect(() => {
+    const translateLessonsAsync = async () => {
+      if (available.length > 0 && currentLanguage !== 'English') {
+        try {
+          const translated = await translationService.translateLessons(
+            available.map((l: any) => ({
+              title: l.title,
+              description: l.description,
+            }))
+          );
+          
+          const updatedLessons = available.map((lesson: any, index: number) => ({
+            ...lesson,
+            title: translated[index].title,
+            description: translated[index].description,
+          }));
+          
+          setTranslatedLessons(updatedLessons);
+          console.log(`Translated ${updatedLessons.length} lessons to ${currentLanguage}`);
+        } catch (error) {
+          console.error('Error translating lessons:', error);
+          setTranslatedLessons(available);
+        }
+      } else {
+        setTranslatedLessons(available);
+      }
+    };
+
+    translateLessonsAsync();
+  }, [available, currentLanguage]);
+
+  const displayLessons = translatedLessons.length > 0 ? translatedLessons : available;
 
   useEffect(() => {
     dispatch(fetchLessonsStart());
@@ -64,7 +102,7 @@ export const LessonsScreen: React.FC<Props> = ({ navigation }) => {
   useFocusEffect(
     useCallback(() => {
       voiceCommandService.setContext('lessons');
-      const totalLessons = available.length;
+      const totalLessons = displayLessons.length;
       const completedCount = completed.length;
       voiceService.speak(`Lessons screen. ${totalLessons} lessons available. ${completedCount} completed. Say start lesson to begin.`);
       
@@ -75,16 +113,16 @@ export const LessonsScreen: React.FC<Props> = ({ navigation }) => {
           else if (screen === 'Settings') navigation.navigate('MainTabs', { screen: 'Settings' } as any);
         },
         onLessonAction: (action) => {
-          if (action === 'start' && available.length > 0) {
+          if (action === 'start' && displayLessons.length > 0) {
             // Start first incomplete lesson
-            const firstIncomplete = available.find((l: any) => !completedIds.includes(l.id));
+            const firstIncomplete = displayLessons.find((l: any) => !completedIds.includes(l.id));
             if (firstIncomplete) {
               handleLessonPress(firstIncomplete.id);
             }
           }
         },
       });
-    }, [available.length, completed.length, completedIds])
+    }, [displayLessons.length, completed.length, completedIds])
   );
 
   const levels = ['Beginner', 'Intermediate', 'Advanced', 'Expert'];
@@ -102,14 +140,14 @@ export const LessonsScreen: React.FC<Props> = ({ navigation }) => {
   );
 
   const filteredLessons = useMemo(() => {
-    return available.filter((lesson: any) => {
+    return displayLessons.filter((lesson: any) => {
       const matchesSearch = lesson.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
         lesson.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
         lesson.chapter.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesLevel = !selectedLevel || lesson.level === selectedLevel;
       return matchesSearch && matchesLevel;
     });
-  }, [available, searchQuery, selectedLevel]);
+  }, [displayLessons, searchQuery, selectedLevel]);
 
   const lessonsByChapter = useMemo(() => {
     const grouped: { [key: string]: any[] } = {};
@@ -123,7 +161,7 @@ export const LessonsScreen: React.FC<Props> = ({ navigation }) => {
   }, [filteredLessons]);
 
   const handleLessonPress = (lessonId: string) => {
-    const lesson = available.find((l: any) => l.id === lessonId);
+    const lesson = displayLessons.find((l: any) => l.id === lessonId);
     if (lesson) {
       // Check if prerequisites are met
       const prereqsMet = lesson.prerequisites.every((prereqId: string) =>
@@ -166,7 +204,7 @@ export const LessonsScreen: React.FC<Props> = ({ navigation }) => {
         {/* Header */}
         <LinearGradient
           colors={[EDU_COLORS.slateGray, EDU_COLORS.deepSlate]}
-          style={styles.header}
+          style={[styles.header, { paddingTop: insets.top + 16 }]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
         >

@@ -10,16 +10,19 @@ import {
   Platform,
   Linking,
 } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { useDispatch, useSelector } from 'react-redux';
 import { useFocusEffect } from '@react-navigation/native';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SPACING, RADIUS, TYPOGRAPHY } from '../../theme';
 import { RootState, AppDispatch } from '../../store';
 import { updateSetting, saveSettings } from '../../store/slices/settingsSlice';
 import { logout } from '../../store/slices/authSlice';
 import { voiceService, voiceCommandService } from '../../services';
+import translationService from '../../services/translationService';
 import type { MainTabParamList } from '../../navigation/MainTabNavigator';
 
 type SettingsScreenNavigationProp = BottomTabNavigationProp<MainTabParamList, 'Settings'>;
@@ -45,6 +48,7 @@ const EDU_COLORS = {
 
 export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
   const dispatch = useDispatch<AppDispatch>();
+  const insets = useSafeAreaInsets();
   const { user } = useSelector((state: RootState) => state.auth);
   const settings = useSelector((state: RootState) => state.settings);
 
@@ -58,7 +62,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
     }, [settings.autoAnnounce])
   );
 
-  const handleSettingChange = (key: string, value: any) => {
+  const handleSettingChange = async (key: string, value: any) => {
     dispatch(updateSetting({ [key]: value }));
     // Save to storage
     if (user?.id) {
@@ -67,10 +71,10 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
     
     // Apply voice settings immediately
     if (key === 'voiceSpeed') {
-      voiceService.updateSettings({ rate: value });
+      await voiceService.updateSettings({ rate: value });
     }
     if (key === 'audioVolume') {
-      voiceService.updateSettings({ volume: value });
+      await voiceService.updateSettings({ volume: value });
     }
     if (key === 'language') {
       const langMap: Record<string, string> = { 
@@ -78,7 +82,20 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
         'Hindi': 'hi-IN', 
         'Spanish': 'es-ES' 
       };
-      voiceService.updateSettings({ language: langMap[value] || 'en-US' });
+      await voiceService.updateSettings({ language: langMap[value] || 'en-US' });
+      
+      // Update translation service
+      translationService.setLanguage(value);
+      
+      // Test the new voice
+      const testPhrases: Record<string, string> = {
+        'English': 'Voice changed to English',
+        'Hindi': 'आवाज हिंदी में बदल गई',
+        'Spanish': 'Voz cambiada a español'
+      };
+      setTimeout(() => {
+        voiceService.speak(testPhrases[value] || testPhrases['English']);
+      }, 300);
     }
   };
 
@@ -100,20 +117,39 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
     }
   };
 
-  const handleToggleHapticFeedback = (value: boolean) => {
+  const handleToggleHapticFeedback = async (value: boolean) => {
     handleSettingChange('hapticFeedback', value);
+    if (value) {
+      // Test haptic feedback immediately
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      voiceService.speak('Haptic feedback enabled');
+    } else {
+      voiceService.speak('Haptic feedback disabled');
+    }
   };
 
-  const handleToggleNotifications = (value: boolean) => {
+  const handleToggleNotifications = async (value: boolean) => {
     handleSettingChange('notificationsEnabled', value);
+    if (settings.hapticFeedback) {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    voiceService.speak(value ? 'Notifications enabled' : 'Notifications disabled');
   };
 
-  const handleToggleHighContrast = (value: boolean) => {
+  const handleToggleHighContrast = async (value: boolean) => {
     handleSettingChange('highContrastMode', value);
+    if (settings.hapticFeedback) {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    voiceService.speak(value ? 'High contrast mode enabled' : 'High contrast mode disabled');
   };
 
-  const handleToggleLargeText = (value: boolean) => {
+  const handleToggleLargeText = async (value: boolean) => {
     handleSettingChange('largeText', value);
+    if (settings.hapticFeedback) {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    voiceService.speak(value ? 'Large text enabled' : 'Large text disabled');
   };
 
   const handleLogout = () => {
@@ -190,7 +226,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
         {/* Header */}
         <LinearGradient
           colors={[EDU_COLORS.slateGray, EDU_COLORS.deepSlate]}
-          style={styles.header}
+          style={[styles.header, { paddingTop: insets.top + 16 }]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
         >

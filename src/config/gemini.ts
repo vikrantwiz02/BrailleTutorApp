@@ -2,7 +2,7 @@
 // Free tier: 60 requests per minute, 1500 requests per day
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY';
+const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY || 'AIzaSyBzkwlIpk8MF4OK1R5j6RRGTfEYAgcdChs';
 
 // Initialize Gemini
 export const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);

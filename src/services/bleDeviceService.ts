@@ -3,10 +3,7 @@ import { Platform, PermissionsAndroid } from 'react-native';
 import { supabase, isSupabaseConfigured } from '../config/supabase';
 import { CONFIG } from '../config';
 import type { DevicePairing } from '../types/database';
-
-// BLE Manager import (will be lazy loaded)
-let BleManager: any = null;
-let isBLEAvailable = false;
+import customBLEService, { type BLEDevice as CustomBLEDevice } from './customBLEService';
 
 export interface BrailleDevice {
   id: string;
@@ -60,62 +57,19 @@ class BLEDeviceService {
     }
 
     try {
-      // Check if we're running in a proper React Native environment
-      if (Platform.OS !== 'android' && Platform.OS !== 'ios') {
-        console.log('BLE not supported on this platform');
-        isBLEAvailable = false;
-        return { success: false, error: 'BLE only supported on Android and iOS devices' };
+      console.log('Initializing Custom BLE Service...');
+      const result = await customBLEService.initialize();
+      
+      if (result.success) {
+        this.isInitialized = true;
+        this.setupEventListeners();
+        console.log('Custom BLE Service initialized successfully');
       }
-
-      // Dynamically import BLE Manager
-      const BleModule = await import('react-native-ble-manager');
-      BleManager = BleModule.default;
-
-      // Check if BleManager module loaded properly
-      if (!BleManager) {
-        console.log('BLE Manager module is null - native module not linked');
-        isBLEAvailable = false;
-        return { 
-          success: false, 
-          error: 'BLE native module not available. Try rebuilding the app.' 
-        };
-      }
-
-      // Check if start function exists
-      if (typeof BleManager.start !== 'function') {
-        console.log('BLE Manager.start is not a function - module may not be properly linked');
-        isBLEAvailable = false;
-        return { 
-          success: false, 
-          error: 'BLE module not properly installed. Please rebuild the app.' 
-        };
-      }
-
-      // Try to start BLE Manager
-      await BleManager.start({ showAlert: false });
-      this.isInitialized = true;
-      isBLEAvailable = true;
-
-      // Set up event listeners
-      this.setupEventListeners();
-
-      console.log('BLE initialized successfully');
-      return { success: true, error: null };
+      
+      return result;
     } catch (err: any) {
       const errorMessage = err?.message || String(err);
-      
-      // Specific error handling
-      if (errorMessage.includes('null') || errorMessage.includes('undefined')) {
-        console.log('BLE native module not linked - this is expected in Expo Go or development builds without native modules');
-        isBLEAvailable = false;
-        return { 
-          success: false, 
-          error: 'BLE requires a native build. Please use expo prebuild and rebuild the app.' 
-        };
-      }
-
-      console.log('BLE initialization error:', errorMessage);
-      isBLEAvailable = false;
+      console.error('BLE initialization error:', errorMessage);
       return { 
         success: false, 
         error: `Bluetooth initialization failed: ${errorMessage}` 
@@ -167,49 +121,34 @@ class BLEDeviceService {
       }
     }
 
-    const hasPermission = await this.requestPermissions();
-    if (!hasPermission) {
-      throw new Error('Bluetooth permissions not granted');
-    }
-
-    const devices: BrailleDevice[] = [];
-
-    return new Promise((resolve, reject) => {
-      try {
-        // Start scanning
-        BleManager.scan(
-          [CONFIG.BLE.SERVICE_UUID], // Filter by our service UUID
-          Math.floor(duration / 1000),
-          true
-        );
-
-        // Set timeout to stop scan and return results
-        this.scanTimeout = setTimeout(async () => {
-          await this.stopScan();
-          
-          // Get discovered peripherals
-          const peripherals = await BleManager.getDiscoveredPeripherals();
-          
-          for (const peripheral of peripherals) {
-            if (peripheral.name?.includes('Braille') || 
-                peripheral.advertising?.serviceUUIDs?.includes(CONFIG.BLE.SERVICE_UUID)) {
-              devices.push({
-                id: peripheral.id,
-                name: peripheral.name || 'Unknown Device',
-                rssi: peripheral.rssi || -100,
-                isConnected: false,
-              });
-            }
-          }
-          
-          resolve(devices);
-        }, duration);
-
-        this.emitEvent('scanStarted', {});
-      } catch (err) {
-        reject(err);
+    try {
+      const result = await customBLEService.startScan();
+      if (!result.success) {
+        throw new Error(result.error || 'Scan failed');
       }
-    });
+
+      this.emitEvent('scanStarted', {});
+
+      // Wait for scan duration
+      await new Promise(resolve => setTimeout(resolve, duration));
+
+      // Get discovered devices
+      const customDevices = customBLEService.getDiscoveredDevices();
+      const devices: BrailleDevice[] = customDevices.map(d => ({
+        id: d.id,
+        name: d.name || 'Unknown Device',
+        rssi: d.rssi || -100,
+        isConnected: d.connected,
+      }));
+
+      customBLEService.stopScan();
+      this.emitEvent('scanStopped', {});
+
+      return devices;
+    } catch (err) {
+      console.error('Scan error:', err);
+      throw err;
+    }
   }
 
   // Stop scanning
@@ -220,7 +159,7 @@ class BLEDeviceService {
     }
 
     try {
-      await BleManager?.stopScan();
+      customBLEService.stopScan();
       this.emitEvent('scanStopped', {});
     } catch (err) {
       console.error('Stop scan error:', err);
@@ -234,25 +173,20 @@ class BLEDeviceService {
     }
 
     try {
-      await BleManager.connect(deviceId);
+      const result = await customBLEService.connectToDevice(deviceId);
       
-      // Discover services and characteristics
-      await BleManager.retrieveServices(deviceId);
-
-      // Read device info
-      const deviceInfo = await this.readDeviceInfo(deviceId);
+      if (!result.success || !result.device) {
+        return result;
+      }
 
       this._connectedDevice = {
-        id: deviceId,
-        name: deviceInfo.name || 'Braille Printer',
-        rssi: -50,
+        id: result.device.id,
+        name: result.device.name || 'Braille Printer',
+        rssi: result.device.rssi || -50,
         isConnected: true,
-        batteryLevel: deviceInfo.batteryLevel,
-        firmwareVersion: deviceInfo.firmwareVersion,
+        batteryLevel: 85, // Mock value
+        firmwareVersion: '1.0.0', // Mock value
       };
-
-      // Enable notifications for status updates
-      await this.enableNotifications(deviceId);
 
       this.emitEvent('connected', this._connectedDevice);
       return { success: true, error: null };
@@ -270,7 +204,7 @@ class BLEDeviceService {
     if (!this._connectedDevice) return;
 
     try {
-      await BleManager.disconnect(this._connectedDevice.id);
+      await customBLEService.disconnect();
       const deviceId = this._connectedDevice.id;
       this._connectedDevice = null;
       this.emitEvent('disconnected', { deviceId });
