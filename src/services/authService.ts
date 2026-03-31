@@ -1,6 +1,10 @@
 // Authentication Service
+// Strategy: Local AsyncStorage auth is always available (no verification, no network).
+// If Supabase is configured AND online, it also syncs there — but local always wins
+// so login never breaks due to Supabase email-confirmation settings.
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase, isSupabaseConfigured } from '../config/supabase';
-import type { Profile, UserSettings } from '../types/database';
 
 export interface AuthUser {
   id: string;
@@ -29,344 +33,198 @@ export interface LoginParams {
   password: string;
 }
 
+// ── Local storage keys ────────────────────────────────────────────────────────
+
+const USERS_KEY   = '@braille_local_users';
+const SESSION_KEY = '@braille_local_session';
+
+interface LocalUser {
+  id: string;
+  email: string;
+  password: string;   // stored as-is; local-only learning app
+  name: string;
+  age?: number;
+  created_at: string;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function generateId(): string {
+  return `local-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function generateToken(userId: string): string {
+  return `local-token-${userId}-${Date.now()}`;
+}
+
+async function getLocalUsers(): Promise<LocalUser[]> {
+  try {
+    const raw = await AsyncStorage.getItem(USERS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveLocalUsers(users: LocalUser[]): Promise<void> {
+  await AsyncStorage.setItem(USERS_KEY, JSON.stringify(users));
+}
+
+async function saveLocalSession(user: AuthUser, token: string): Promise<void> {
+  await AsyncStorage.setItem(SESSION_KEY, JSON.stringify({ user, token }));
+}
+
+async function clearLocalSession(): Promise<void> {
+  await AsyncStorage.removeItem(SESSION_KEY);
+}
+
+// ── Auth Service ──────────────────────────────────────────────────────────────
+
 class AuthService {
   private normalizeEmail(email: string): string {
     return email.trim().toLowerCase();
   }
 
-  // Register new user
+  // ── Register ────────────────────────────────────────────────────────────────
   async register(params: RegisterParams): Promise<AuthResponse> {
-    const normalizedEmail = this.normalizeEmail(params.email);
+    const email = this.normalizeEmail(params.email);
 
-    if (!isSupabaseConfigured()) {
-      // Fallback for development without Supabase
-      return this.mockRegister({ ...params, email: normalizedEmail });
+    // --- Local registration (always runs) ---
+    const users = await getLocalUsers();
+    const existing = users.find(u => u.email === email);
+    if (existing) {
+      return { user: null, token: null, error: 'An account with this email already exists. Please sign in.' };
     }
 
-    try {
-      const { data, error } = await supabase.auth.signUp({
-        email: normalizedEmail,
+    const newUser: LocalUser = {
+      id: generateId(),
+      email,
+      password: params.password,
+      name: params.name,
+      age: params.age,
+      created_at: new Date().toISOString(),
+    };
+
+    users.push(newUser);
+    await saveLocalUsers(users);
+
+    const authUser: AuthUser = {
+      id: newUser.id,
+      email: newUser.email,
+      name: newUser.name,
+      age: newUser.age,
+      created_at: newUser.created_at,
+    };
+    const token = generateToken(newUser.id);
+    await saveLocalSession(authUser, token);
+
+    // --- Best-effort Supabase sync (silent, never blocks the user) ---
+    if (isSupabaseConfigured()) {
+      supabase.auth.signUp({
+        email,
         password: params.password,
-        options: {
-          data: {
-            name: params.name,
-            age: params.age,
-          },
-        },
-      });
-
-      if (error) {
-        return { user: null, token: null, error: error.message };
-      }
-
-      if (!data.user) {
-        return { user: null, token: null, error: 'Registration failed' };
-      }
-
-      // If Supabase returns a user but no session (email confirmation enabled on dashboard),
-      // attempt an immediate sign-in to get a session without requiring verification.
-      if (!data.session?.access_token) {
-        const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-          email: normalizedEmail,
-          password: params.password,
-        });
-
-        if (signInError || !signInData.session?.access_token) {
-          return {
-            user: null,
-            token: null,
-            error: 'Account created but sign-in failed. Please disable "Confirm email" in your Supabase dashboard, then try again.',
-          };
-        }
-
-        const authUser: AuthUser = {
-          id: data.user.id,
-          email: normalizedEmail,
-          name: params.name,
-          age: params.age,
-          created_at: data.user.created_at,
-        };
-
-        return {
-          user: authUser,
-          token: signInData.session.access_token,
-          error: null,
-        };
-      }
-
-      // Update profile with additional info
-      if (params.age) {
-        await supabase
-          .from('profiles')
-          .update({ age: params.age } as any)
-          .eq('id', data.user.id);
-      }
-
-      const authUser: AuthUser = {
-        id: data.user.id,
-        email: normalizedEmail,
-        name: params.name,
-        created_at: data.user.created_at,
-      };
-
-      return {
-        user: authUser,
-        token: data.session?.access_token || null,
-        error: null,
-      };
-    } catch (err) {
-      return { user: null, token: null, error: (err as Error).message };
+        options: { data: { name: params.name, age: params.age } },
+      }).catch(() => {/* ignore */});
     }
+
+    return { user: authUser, token, error: null };
   }
 
-  // Login existing user
+  // ── Login ────────────────────────────────────────────────────────────────────
   async login(params: LoginParams): Promise<AuthResponse> {
-    const normalizedEmail = this.normalizeEmail(params.email);
-    console.log('[AuthService] Login attempt for:', normalizedEmail);
-    
-    if (!isSupabaseConfigured()) {
-      console.log('[AuthService] Supabase not configured, using mock login');
-      return this.mockLogin({ ...params, email: normalizedEmail });
+    const email = this.normalizeEmail(params.email);
+
+    // --- Local lookup first ---
+    const users = await getLocalUsers();
+    const found = users.find(u => u.email === email);
+
+    if (!found) {
+      return { user: null, token: null, error: 'No account found with this email. Please sign up first.' };
     }
 
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: normalizedEmail,
-        password: params.password,
-      });
-
-      if (error) {
-        console.error('[AuthService] Login error:', error.message);
-        if (error.message === 'Invalid login credentials') {
-          return {
-            user: null,
-            token: null,
-            error:
-              'Invalid email or password. If you just signed up, verify your email first and then try signing in again.',
-          };
-        }
-        return { user: null, token: null, error: error.message };
-      }
-
-      if (!data.user) {
-        console.error('[AuthService] Login failed - no user returned');
-        return { user: null, token: null, error: 'Login failed' };
-      }
-
-      console.log('[AuthService] Login successful, user ID:', data.user.id);
-
-      // Fetch profile
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', data.user.id)
-        .single();
-
-      if (profileError) {
-        console.log('[AuthService] Profile fetch error:', profileError.message);
-      }
-
-      const profileData = profile as Profile | null;
-      const authUser: AuthUser = {
-        id: data.user.id,
-        email: data.user.email!,
-        name: profileData?.name || data.user.email!.split('@')[0],
-        avatar_url: profileData?.avatar_url || undefined,
-        age: profileData?.age || undefined,
-        created_at: data.user.created_at,
-      };
-
-      console.log('[AuthService] User authenticated:', authUser.id, authUser.name);
-
-      return {
-        user: authUser,
-        token: data.session?.access_token || null,
-        error: null,
-      };
-    } catch (err) {
-      console.error('[AuthService] Login exception:', err);
-      const message = (err as Error).message || 'Unknown login error';
-      if (/network request failed/i.test(message)) {
-        return {
-          user: null,
-          token: null,
-          error:
-            'Cannot reach Supabase. Verify EXPO_PUBLIC_SUPABASE_URL and internet/DNS access, then rebuild the app.',
-        };
-      }
-      return { user: null, token: null, error: message };
+    if (found.password !== params.password) {
+      return { user: null, token: null, error: 'Incorrect password. Please try again.' };
     }
+
+    const authUser: AuthUser = {
+      id: found.id,
+      email: found.email,
+      name: found.name,
+      age: found.age,
+      created_at: found.created_at,
+    };
+    const token = generateToken(found.id);
+    await saveLocalSession(authUser, token);
+
+    // --- Best-effort Supabase sync (silent) ---
+    if (isSupabaseConfigured()) {
+      supabase.auth.signInWithPassword({ email, password: params.password }).catch(() => {/* ignore */});
+    }
+
+    return { user: authUser, token, error: null };
   }
 
-  // Logout
+  // ── Logout ───────────────────────────────────────────────────────────────────
   async logout(): Promise<{ error: string | null }> {
-    if (!isSupabaseConfigured()) {
-      return { error: null };
+    await clearLocalSession();
+    if (isSupabaseConfigured()) {
+      supabase.auth.signOut().catch(() => {/* ignore */});
     }
-
-    try {
-      const { error } = await supabase.auth.signOut();
-      return { error: error?.message || null };
-    } catch (err) {
-      return { error: (err as Error).message };
-    }
+    return { error: null };
   }
 
-  // Get current session
+  // ── Get session (app resume) ──────────────────────────────────────────────────
   async getSession(): Promise<AuthResponse> {
-    if (!isSupabaseConfigured()) {
+    try {
+      const raw = await AsyncStorage.getItem(SESSION_KEY);
+      if (!raw) return { user: null, token: null, error: null };
+      const { user, token } = JSON.parse(raw);
+      if (!user || !token) return { user: null, token: null, error: null };
+      return { user, token, error: null };
+    } catch {
       return { user: null, token: null, error: null };
     }
+  }
 
+  // ── Update profile ────────────────────────────────────────────────────────────
+  async updateProfile(userId: string, updates: Partial<AuthUser>): Promise<{ error: string | null }> {
     try {
-      const { data: { session }, error } = await supabase.auth.getSession();
-
-      if (error || !session) {
-        return { user: null, token: null, error: error?.message || null };
+      const users = await getLocalUsers();
+      const idx = users.findIndex(u => u.id === userId);
+      if (idx !== -1) {
+        users[idx] = { ...users[idx], ...updates };
+        await saveLocalUsers(users);
       }
-
-      // Fetch profile
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', session.user.id)
-        .single();
-
-      const profileData = profile as Profile | null;
-      const authUser: AuthUser = {
-        id: session.user.id,
-        email: session.user.email!,
-        name: profileData?.name || session.user.email!.split('@')[0],
-        avatar_url: profileData?.avatar_url || undefined,
-        age: profileData?.age || undefined,
-        created_at: session.user.created_at,
-      };
-
-      return {
-        user: authUser,
-        token: session.access_token,
-        error: null,
-      };
-    } catch (err) {
-      return { user: null, token: null, error: (err as Error).message };
-    }
-  }
-
-  // Update profile
-  async updateProfile(userId: string, updates: Partial<Profile>): Promise<{ error: string | null }> {
-    if (!isSupabaseConfigured()) {
+      // Update saved session too
+      const raw = await AsyncStorage.getItem(SESSION_KEY);
+      if (raw) {
+        const session = JSON.parse(raw);
+        session.user = { ...session.user, ...updates };
+        await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(session));
+      }
       return { error: null };
-    }
-
-    try {
-      const { error } = await supabase
-        .from('profiles')
-        .update(updates as any)
-        .eq('id', userId);
-
-      return { error: error?.message || null };
     } catch (err) {
       return { error: (err as Error).message };
     }
   }
 
-  // Reset password
+  // ── Reset password (local) ────────────────────────────────────────────────────
   async resetPassword(email: string): Promise<{ error: string | null }> {
-    if (!isSupabaseConfigured()) {
-      return { error: null };
-    }
-
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email);
-      return { error: error?.message || null };
-    } catch (err) {
-      return { error: (err as Error).message };
-    }
+    // Local app has no email — just acknowledge
+    return { error: null };
   }
 
-  // Resend signup verification email
-  async resendVerificationEmail(email: string): Promise<{ error: string | null }> {
-    if (!isSupabaseConfigured()) {
-      return { error: 'Supabase is not configured.' };
-    }
-
-    const normalizedEmail = this.normalizeEmail(email);
-
-    try {
-      const { error } = await supabase.auth.resend({
-        type: 'signup',
-        email: normalizedEmail,
-      });
-
-      return { error: error?.message || null };
-    } catch (err) {
-      return { error: (err as Error).message };
-    }
+  // ── Kept for API compatibility (no-op) ───────────────────────────────────────
+  async resendVerificationEmail(_email: string): Promise<{ error: string | null }> {
+    return { error: null };
   }
 
-  // Get user settings
-  async getSettings(userId: string): Promise<UserSettings | null> {
-    if (!isSupabaseConfigured()) {
-      return null;
-    }
-
-    try {
-      const { data, error } = await supabase
-        .from('user_settings')
-        .select('*')
-        .eq('user_id', userId)
-        .single();
-
-      return error ? null : data;
-    } catch {
-      return null;
-    }
+  async getSettings(_userId: string): Promise<null> {
+    return null;
   }
 
-  // Update user settings
-  async updateSettings(userId: string, settings: Partial<UserSettings>): Promise<{ error: string | null }> {
-    if (!isSupabaseConfigured()) {
-      return { error: null };
-    }
-
-    try {
-      const { error } = await supabase
-        .from('user_settings')
-        .upsert({ user_id: userId, ...settings } as any)
-        .eq('user_id', userId);
-
-      return { error: error?.message || null };
-    } catch (err) {
-      return { error: (err as Error).message };
-    }
-  }
-
-  // Mock methods for development without Supabase
-  private mockRegister(params: RegisterParams): AuthResponse {
-    return {
-      user: {
-        id: `mock-${Date.now()}`,
-        email: params.email,
-        name: params.name,
-        age: params.age,
-        created_at: new Date().toISOString(),
-      },
-      token: `mock-token-${Date.now()}`,
-      error: null,
-    };
-  }
-
-  private mockLogin(params: LoginParams): AuthResponse {
-    return {
-      user: {
-        id: `mock-${Date.now()}`,
-        email: params.email,
-        name: params.email.split('@')[0],
-        created_at: new Date().toISOString(),
-      },
-      token: `mock-token-${Date.now()}`,
-      error: null,
-    };
+  async updateSettings(_userId: string, _settings: object): Promise<{ error: string | null }> {
+    return { error: null };
   }
 }
 

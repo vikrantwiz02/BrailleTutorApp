@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import theme, { COLORS, SPACING, RADIUS, TYPOGRAPHY, SHADOWS } from '../../theme';
+import theme from '../../theme';
 import { RootState, AppDispatch } from '../../store';
 import { registerUser, clearError } from '../../store/slices/authSlice';
 import { RootStackParamList } from '../../navigation/RootNavigator';
