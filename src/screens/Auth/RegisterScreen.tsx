@@ -9,7 +9,6 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -33,6 +32,8 @@ export const RegisterScreen: React.FC<Props> = ({ navigation }) => {
   const { loading, error } = useSelector((state: RootState) => state.auth);
 
   const handleRegister = async () => {
+    const normalizedEmail = email.trim().toLowerCase();
+
     if (password !== confirmPassword) {
       Alert.alert('Error', 'Passwords do not match');
       return;
@@ -47,7 +48,7 @@ export const RegisterScreen: React.FC<Props> = ({ navigation }) => {
     dispatch(clearError());
     
     // Use the real register thunk
-    dispatch(registerUser({ email, password, name }));
+    dispatch(registerUser({ email: normalizedEmail, password, name }));
   };
 
   return (

@@ -13,3 +13,5 @@ export { conversationalAIService, type AppContext, type AICommandResult } from '
 export { translationService } from './translationService';
 export { customBLEService } from './customBLEService';
 export { logger } from './loggerService';
+export { voiceAssistantCore } from './voice/voiceAssistantCore';
+export type { IntentType, NLUResult, VoiceAction, AssistantMode, ConversationEntry, AssistantContext } from './voice/types';

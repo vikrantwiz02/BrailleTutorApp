@@ -1,5 +1,5 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
-import { authService, type AuthUser } from '../../services';
+import { authService, type AuthUser } from '../../services/authService';
 
 interface AuthState {
   user: AuthUser | null;
@@ -182,7 +182,7 @@ const authSlice = createSlice({
         state.loading = false;
         state.user = action.payload.user;
         state.token = action.payload.token;
-        state.isAuthenticated = true;
+        state.isAuthenticated = Boolean(action.payload.user && action.payload.token);
         state.error = null;
       })
       .addCase(registerUser.rejected, (state, action) => {

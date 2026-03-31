@@ -9,12 +9,14 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import theme, { COLORS, SPACING, RADIUS, TYPOGRAPHY, SHADOWS } from '../../theme';
 import { RootState, AppDispatch } from '../../store';
 import { loginUser, clearError } from '../../store/slices/authSlice';
+import { authService } from '../../services/authService';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 
 type LoginScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'Login'>;
@@ -28,13 +30,35 @@ export const LoginScreen: React.FC<Props> = ({ navigation }) => {
   const [password, setPassword] = useState('');
   const dispatch = useDispatch<AppDispatch>();
   const { loading, error } = useSelector((state: RootState) => state.auth);
+  const [resendingVerification, setResendingVerification] = useState(false);
 
   const handleLogin = async () => {
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedPassword = password;
+
     // Clear any previous errors
     dispatch(clearError());
     
     // Use the real login thunk
-    dispatch(loginUser({ email, password }));
+    dispatch(loginUser({ email: normalizedEmail, password: normalizedPassword }));
+  };
+
+  const handleResendVerification = async () => {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) {
+      return;
+    }
+
+    setResendingVerification(true);
+    const result = await authService.resendVerificationEmail(normalizedEmail);
+    setResendingVerification(false);
+
+    if (result.error) {
+      Alert.alert('Resend Failed', result.error);
+      return;
+    }
+
+    Alert.alert('Verification Sent', 'A new verification email was sent. Check inbox and spam/promotions folders.');
   };
 
   return (
@@ -73,6 +97,20 @@ export const LoginScreen: React.FC<Props> = ({ navigation }) => {
             />
 
             {error ? <Text style={styles.error}>{error}</Text> : null}
+
+            {error?.toLowerCase().includes('verify your email') || error?.toLowerCase().includes('invalid email or password') ? (
+              <TouchableOpacity
+                style={styles.linkButton}
+                onPress={handleResendVerification}
+                disabled={resendingVerification || !email.trim()}
+              >
+                {resendingVerification ? (
+                  <ActivityIndicator color={theme.colors.primary.main} />
+                ) : (
+                  <Text style={styles.linkTextBold}>Resend verification email</Text>
+                )}
+              </TouchableOpacity>
+            ) : null}
 
             <TouchableOpacity
               style={[styles.button, loading && styles.buttonDisabled]}

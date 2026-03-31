@@ -2,7 +2,11 @@
 // Free tier: 60 requests per minute, 1500 requests per day
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY || 'AIzaSyBzkwlIpk8MF4OK1R5j6RRGTfEYAgcdChs';
+const GEMINI_API_KEY = (process.env.EXPO_PUBLIC_GEMINI_API_KEY || '').trim();
+
+const looksLikeGeminiKey = (key: string): boolean => {
+  return key.startsWith('AIza') && key.length >= 30;
+};
 
 // Initialize Gemini
 export const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
@@ -40,7 +44,7 @@ Be conversational but educational. You're helping someone gain literacy and inde
 
 // Helper to check if Gemini is configured
 export const isGeminiConfigured = (): boolean => {
-  return GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY';
+  return looksLikeGeminiKey(GEMINI_API_KEY) && GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY';
 };
 
 export default geminiModel;

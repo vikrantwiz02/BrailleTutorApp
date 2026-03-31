@@ -1,546 +1,676 @@
-// VoiceAssistant - Global floating voice assistant component
-// Provides continuous listening, visual feedback, and conversation display
+// ─── Voice Assistant UI ───────────────────────────────────────────────────────
+// Production-ready floating voice assistant.
+//
+// Features:
+//   • Floating mic button (bottom-right)
+//   • Animated waveform bars while listening
+//   • Pulse ring while processing
+//   • ONLINE / OFFLINE mode badge
+//   • Fade-in transcript + spoken response card
+//   • Long-press to expand conversation history panel
+//   • Full accessibility (VoiceOver / TalkBack)
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, {
+  useState, useEffect, useRef, useCallback, useMemo,
+} from 'react';
 import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Animated,
-  Dimensions,
-  Platform,
-  AccessibilityInfo,
+  View, Text, TouchableOpacity, StyleSheet, Animated,
+  Dimensions, Platform, AccessibilityInfo, ScrollView,
+  TouchableWithoutFeedback,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { useSelector } from 'react-redux';
 import { useNavigation, useNavigationState } from '@react-navigation/native';
+
 import { voiceService } from '../services/voiceService';
-import { conversationalAIService, AICommandResult } from '../services/conversationalAIService';
-import { RootState } from '../store';
+import { voiceAssistantCore } from '../services/voice/voiceAssistantCore';
+import { isGeminiConfigured } from '../config/gemini';
+import { store } from '../store';
+import type { RootState } from '../store';
+import type { AssistantMode, ConversationEntry } from '../services/voice/types';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const { width: SW } = Dimensions.get('window');
 
-interface VoiceAssistantProps {
-  isVisible?: boolean;
-}
+// ── Colour tokens ─────────────────────────────────────────────────────────────
 
-const EDU_COLORS = {
-  primaryBlue: '#3B82F6',
-  deepBlue: '#2563EB',
-  softPurple: '#8B5CF6',
-  richPurple: '#7C3AED',
-  vibrantGreen: '#10B981',
-  emeraldGreen: '#059669',
-  warmOrange: '#F59E0B',
-  sunsetOrange: '#F97316',
-  deepSlate: '#0F172A',
-  slateGray: '#1E293B',
-  cardDark: '#1A1A2E',
-  accent: '#06B6D4',
+const C = {
+  blue:     '#3B82F6',
+  blueDark: '#1D4ED8',
+  orange:   '#F97316',
+  orangeHi: '#FB923C',
+  purple:   '#8B5CF6',
+  purpleDk: '#6D28D9',
+  green:    '#10B981',
+  greenDk:  '#059669',
+  slate:    '#0F172A',
+  slateMid: '#1E293B',
+  white:    '#FFFFFF',
+  dim:      'rgba(255,255,255,0.55)',
+  cardBg:   'rgba(15,23,42,0.92)',
 };
 
-export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ isVisible = true }) => {
+const WAVEFORM_BARS = 5;
+
+// ── Gradient sets per mode ────────────────────────────────────────────────────
+
+function modeGradient(mode: AssistantMode): [string, string] {
+  switch (mode) {
+    case 'listening':   return [C.orange,   C.orangeHi];
+    case 'processing':  return [C.purple,   C.purpleDk];
+    case 'speaking':    return [C.green,    C.greenDk];
+    case 'confirming':  return [C.orange,   C.purpleDk];
+    default:            return [C.blue,     C.blueDark];
+  }
+}
+
+function modeIcon(mode: AssistantMode): keyof typeof Ionicons.glyphMap {
+  switch (mode) {
+    case 'listening':  return 'mic';
+    case 'processing': return 'ellipsis-horizontal';
+    case 'speaking':   return 'volume-high';
+    case 'confirming': return 'help-circle';
+    default:           return 'mic-outline';
+  }
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
+export const VoiceAssistant: React.FC = () => {
   const navigation = useNavigation<any>();
-  const currentRouteName = useNavigationState(state => {
-    if (!state || !state.routes) return 'Home';
-    const route = state.routes[state.index];
-    if (route.state && route.state.routes) {
-      const nestedRoute = route.state.routes[route.state.index as number];
-      return nestedRoute?.name || route.name;
-    }
-    return route.name;
+  const settings   = useSelector((s: RootState) => s.settings);
+  const authState  = useSelector((s: RootState) => s.auth);
+  const lessons    = useSelector((s: RootState) => s.lessons);
+  const analytics  = useSelector((s: RootState) => s.analytics);
+
+  // Current route name (handles nested tab navigator)
+  const currentRoute = useNavigationState(state => {
+    if (!state?.routes) return 'Home';
+    const r = state.routes[state.index];
+    if (r.state?.routes) return (r.state.routes as any)[(r.state.index as number)]?.name ?? r.name;
+    return r.name;
   });
 
-  const settings = useSelector((state: RootState) => state.settings);
-  const { current: currentLesson } = useSelector((state: RootState) => state.lessons);
+  // ── State ──────────────────────────────────────────────────────────────────
 
+  const [mode, setMode]               = useState<AssistantMode>('idle');
   const [isListening, setIsListening] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [transcript, setTranscript] = useState('');
+  const [transcript, setTranscript]   = useState('');
   const [lastResponse, setLastResponse] = useState('');
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [showTranscript, setShowTranscript] = useState(false);
-  const [hasGreeted, setHasGreeted] = useState(false);
+  const [showCard, setShowCard]       = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory]         = useState<ConversationEntry[]>([]);
+  const [hasInit, setHasInit]         = useState(false);
 
-  // Animations
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-  const expandAnim = useRef(new Animated.Value(0)).current;
-  const transcriptOpacity = useRef(new Animated.Value(0)).current;
+  // ── Refs ───────────────────────────────────────────────────────────────────
 
-  // Initialize conversational AI and set up handlers
+  const mountedRef     = useRef(true);
+  const listeningRef   = useRef(false);
+  const processingRef  = useRef(false);
+  const manualStopRef  = useRef(false);
+  const resultHandled  = useRef(false);
+  const fatalUntil     = useRef(0);
+  const scrollRef      = useRef<ScrollView>(null);
+
+  // ── Animations ────────────────────────────────────────────────────────────
+
+  const pulseAnim   = useRef(new Animated.Value(1)).current;
+  const cardOpacity = useRef(new Animated.Value(0)).current;
+  const histOpacity = useRef(new Animated.Value(0)).current;
+  // Waveform bars
+  const barAnims = useRef(
+    Array.from({ length: WAVEFORM_BARS }, () => new Animated.Value(0.3))
+  ).current;
+
+  // Derived
+  const online = isGeminiConfigured() && settings.voiceEnabled;
+
+  // ── Sync context to core ──────────────────────────────────────────────────
+
   useEffect(() => {
-    const initializeAssistant = async () => {
-      const result = await conversationalAIService.initialize();
-      if (result.success) {
-        // Set up navigation handler
-        conversationalAIService.setNavigationHandler((screen, params) => {
-          handleNavigation(screen, params);
-        });
-
-        // Set up lesson action handler
-        conversationalAIService.setLessonActionHandler((action, params) => {
-          handleLessonAction(action, params);
-        });
-
-        // Set state change callback
-        conversationalAIService.setOnStateChange((state) => {
-          if (state.isProcessing !== undefined) {
-            setIsProcessing(state.isProcessing);
-          }
-        });
-
-        // Greet user on first launch and start listening
-        if (!hasGreeted && settings.autoAnnounce && settings.voiceEnabled) {
-          setTimeout(async () => {
-            await conversationalAIService.greetUser();
-            setHasGreeted(true);
-            
-            // Auto-start listening after greeting (wait for greeting to finish)
-            setTimeout(async () => {
-              const result = await voiceService.startListening();
-              if (result.success) {
-                setIsListening(true);
-                setShowTranscript(true);
-                Animated.timing(transcriptOpacity, {
-                  toValue: 1,
-                  duration: 200,
-                  useNativeDriver: true,
-                }).start();
-              }
-            }, 2000); // Wait 2 seconds for greeting to complete
-          }, 1500);
-        }
-      }
+    const routeMap: Record<string, string> = {
+      Home: 'home', Lessons: 'lessons', LessonDetail: 'lessonDetail',
+      ActiveLesson: 'activeLesson', Progress: 'progress',
+      Settings: 'settings', Device: 'device', Notifications: 'notifications',
     };
 
-    initializeAssistant();
+    voiceAssistantCore.updateContext({
+      currentScreen: routeMap[currentRoute] ?? 'home',
+      currentLesson: lessons.current ? {
+        id: lessons.current.id,
+        title: lessons.current.title,
+        stepNumber: lessons.currentStep + 1,
+        totalSteps: lessons.totalSteps,
+      } : null,
+      completedLessonsCount: lessons.completedIds?.length ?? 0,
+      streak: (analytics as any)?.stats?.currentStreak ?? 0,
+      deviceConnected: (store.getState() as any).device?.connected ?? false,
+      isOnline: true,
+    });
+  }, [currentRoute, lessons, analytics]);
+
+  // Sync handlers to core
+  useEffect(() => {
+    voiceAssistantCore.setHandlers({
+      onNavigate: (screen, params) => {
+        try {
+          if (screen === 'Notifications') {
+            navigation.navigate('Notifications');
+          } else {
+            navigation.navigate('MainTabs', { screen });
+          }
+        } catch {
+          navigation.navigate(screen);
+        }
+      },
+      onLessonAction: (action) => {
+        if (global.lessonActionHandler) global.lessonActionHandler(action);
+      },
+    });
+  }, [navigation]);
+
+  // Mode changes from core
+  useEffect(() => {
+    voiceAssistantCore.setOnModeChange((m) => {
+      if (!mountedRef.current) return;
+      setMode(m);
+      processingRef.current = (m === 'processing');
+    });
   }, []);
 
-  // Update context when screen changes
+  // Unmount cleanup
   useEffect(() => {
-    // Parse level number from string (e.g., "Beginner" -> 1)
-    const levelMap: Record<string, number> = {
-      'Beginner': 1,
-      'Intermediate': 2,
-      'Advanced': 3,
-      'Expert': 4,
-    };
-    
-    conversationalAIService.updateContext({
-      currentScreen: currentRouteName,
-      currentLesson: currentLesson ? {
-        id: currentLesson.id,
-        title: currentLesson.title,
-        level: levelMap[currentLesson.level] || 1,
-        stepNumber: 1,
-        totalSteps: 5, // Default, will be updated by ActiveLessonScreen
-      } : undefined,
-    });
-  }, [currentRouteName, currentLesson]);
+    return () => { mountedRef.current = false; };
+  }, []);
 
-  // Handle navigation commands
-  const handleNavigation = (screen: string, params?: Record<string, any>) => {
-    const screenMap: Record<string, string> = {
-      'Home': 'Home',
-      'home': 'Home',
-      'Lessons': 'Lessons',
-      'lessons': 'Lessons',
-      'Progress': 'Progress',
-      'progress': 'Progress',
-      'Settings': 'Settings',
-      'settings': 'Settings',
-      'Device': 'Device',
-      'device': 'Device',
-    };
+  // ── Waveform animation ────────────────────────────────────────────────────
 
-    const targetScreen = screenMap[screen];
-    if (targetScreen) {
-      try {
-        // Navigate to main tabs first, then to specific screen
-        navigation.navigate('MainTabs', { screen: targetScreen });
-      } catch (error) {
-        console.log('Navigation error:', error);
-        // Try direct navigation
-        navigation.navigate(targetScreen);
-      }
-    }
-  };
-
-  // Handle lesson action commands
-  const handleLessonAction = (action: string, params?: Record<string, any>) => {
-    // Emit event that screens can listen to
-    // This will be picked up by ActiveLessonScreen
-    if (global.lessonActionHandler) {
-      global.lessonActionHandler(action, params);
-    }
-  };
-
-  // Pulse animation for listening state
   useEffect(() => {
     if (isListening) {
-      const pulse = Animated.loop(
+      const loops = barAnims.map((anim, i) =>
+        Animated.loop(
+          Animated.sequence([
+            Animated.delay(i * 80),
+            Animated.timing(anim, { toValue: 1, duration: 300, useNativeDriver: true }),
+            Animated.timing(anim, { toValue: 0.2, duration: 300, useNativeDriver: true }),
+          ])
+        )
+      );
+      loops.forEach(l => l.start());
+      return () => loops.forEach(l => l.stop());
+    } else {
+      barAnims.forEach(a => a.setValue(0.3));
+    }
+  }, [isListening, barAnims]);
+
+  // ── Pulse animation (processing) ─────────────────────────────────────────
+
+  useEffect(() => {
+    if (mode === 'processing') {
+      const loop = Animated.loop(
         Animated.sequence([
-          Animated.timing(pulseAnim, {
-            toValue: 1.3,
-            duration: 800,
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseAnim, {
-            toValue: 1,
-            duration: 800,
-            useNativeDriver: true,
-          }),
+          Animated.timing(pulseAnim, { toValue: 1.15, duration: 500, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1,    duration: 500, useNativeDriver: true }),
         ])
       );
-      pulse.start();
-      return () => pulse.stop();
+      loop.start();
+      return () => loop.stop();
     } else {
       pulseAnim.setValue(1);
     }
-  }, [isListening]);
+  }, [mode, pulseAnim]);
 
-  // Handle voice result
-  const handleVoiceResult = useCallback(async (text: string) => {
-    if (!text.trim()) return;
+  // ── Card fade ────────────────────────────────────────────────────────────
 
-    setTranscript(text);
-    setShowTranscript(true);
-    Animated.timing(transcriptOpacity, {
-      toValue: 1,
-      duration: 200,
-      useNativeDriver: true,
-    }).start();
+  const showCardFn = useCallback(() => {
+    setShowCard(true);
+    Animated.timing(cardOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+  }, [cardOpacity]);
 
-    // First try quick commands (no AI needed)
-    const quickResult = await conversationalAIService.handleQuickCommand(text);
-    
-    if (quickResult) {
-      if (quickResult.type === 'navigate' && quickResult.action) {
-        handleNavigation(quickResult.action);
-      }
-      if (quickResult.shouldSpeak && quickResult.response) {
-        setLastResponse(quickResult.response);
-      }
-    } else {
-      // Process with AI
-      const result = await conversationalAIService.processUserInput(text);
-      if (result.response) {
-        setLastResponse(result.response);
-      }
+  const hideCardFn = useCallback((delayMs = 3500) => {
+    setTimeout(() => {
+      if (!mountedRef.current) return;
+      Animated.timing(cardOpacity, { toValue: 0, duration: 300, useNativeDriver: true })
+        .start(() => { if (mountedRef.current) setShowCard(false); });
+    }, delayMs);
+  }, [cardOpacity]);
+
+  // ── Restart listening (continuous mode) ──────────────────────────────────
+
+  const restartListening = useCallback(async (delayMs = 450) => {
+    if (manualStopRef.current || !settings.voiceEnabled || !mountedRef.current) return;
+    if (Date.now() < fatalUntil.current) return;
+    if (listeningRef.current || processingRef.current) return;
+
+    if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
+
+    // Wait for TTS to finish before starting mic
+    const MAX_WAIT = 9000;
+    const started = Date.now();
+    while (Date.now() - started < MAX_WAIT) {
+      if (!(await voiceService.isSpeaking())) break;
+      await new Promise(r => setTimeout(r, 250));
     }
 
-    // Hide transcript after a delay
-    setTimeout(() => {
-      Animated.timing(transcriptOpacity, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: true,
-      }).start(() => {
-        setShowTranscript(false);
-        setTranscript('');
-      });
-    }, 3000);
-  }, []);
+    if (manualStopRef.current || listeningRef.current || !mountedRef.current) return;
 
-  // Set up voice event listeners
+    const result = await voiceService.startListening();
+    if (result.success && mountedRef.current) {
+      setIsListening(true);
+      listeningRef.current = true;
+      setTranscript('');
+      showCardFn();
+    }
+  }, [settings.voiceEnabled, showCardFn]);
+
+  // ── Voice event listener ──────────────────────────────────────────────────
+
   useEffect(() => {
-    const removeListener = voiceService.addEventListener((event, data) => {
+    const unsub = voiceService.addEventListener(async (event, data) => {
+      if (!mountedRef.current) return;
+
       if (event === 'voiceResult' && data.isFinal) {
-        handleVoiceResult(data.text);
+        resultHandled.current = true;
         setIsListening(false);
+        listeningRef.current = false;
+        setTranscript(data.text);
+
+        processingRef.current = true;
+        setMode('processing');
+        showCardFn();
+
+        const response = await voiceAssistantCore.processInput(data.text);
+
+        if (mountedRef.current) {
+          setLastResponse(response);
+          setHistory(voiceAssistantCore.getHistory());
+          hideCardFn(response ? 4000 : 2000);
+          await restartListening(600);
+        }
       } else if (event === 'voicePartialResult') {
         setTranscript(data.text);
       } else if (event === 'voiceError') {
         setIsListening(false);
-        console.log('Voice error:', data.error);
+        listeningRef.current = false;
+        resultHandled.current = false;
+
+        const msg = String(data?.message || '').toLowerCase();
+        const isFatal = msg.includes('initialize recognizer') ||
+                        msg.includes('recognition service busy') ||
+                        String(data?.code) === 'recognition_fail';
+
+        if (isFatal) {
+          fatalUntil.current = Date.now() + 7000;
+          setLastResponse('Microphone initialisation failed. Tap the mic in a few seconds.');
+          showCardFn(); hideCardFn(4000);
+        } else {
+          restartListening(700);
+        }
       } else if (event === 'voiceEnd') {
         setIsListening(false);
+        listeningRef.current = false;
+        if (!resultHandled.current) restartListening(400);
+        resultHandled.current = false;
       }
     });
+    return () => unsub();
+  }, [hideCardFn, restartListening, showCardFn]);
 
-    return () => removeListener();
-  }, [handleVoiceResult]);
+  // Stop listening when voice is disabled
+  useEffect(() => {
+    if (!settings.voiceEnabled) {
+      manualStopRef.current = true;
+      voiceService.stopListening();
+      setIsListening(false);
+      listeningRef.current = false;
+    }
+  }, [settings.voiceEnabled]);
 
-  // Toggle listening
-  const toggleListening = async () => {
+  // ── Greeting on first mount ───────────────────────────────────────────────
+
+  useEffect(() => {
+    if (hasInit || !settings.voiceEnabled || !settings.autoAnnounce) return;
+    setHasInit(true);
+
+    setTimeout(async () => {
+      if (!mountedRef.current) return;
+      await voiceAssistantCore.processInput('hello');
+      setHistory(voiceAssistantCore.getHistory());
+      manualStopRef.current = false;
+      restartListening(2000);
+    }, 1800);
+  }, [hasInit, restartListening, settings.autoAnnounce, settings.voiceEnabled]);
+
+  // ── Toggle listening (manual tap) ─────────────────────────────────────────
+
+  const handleTap = useCallback(async () => {
     if (isListening) {
+      manualStopRef.current = true;
       await voiceService.stopListening();
       setIsListening(false);
-    } else {
-      // Check permissions first on Android
-      if (Platform.OS === 'android') {
-        try {
-          const { PermissionsAndroid } = require('react-native');
-          const granted = await PermissionsAndroid.request(
-            PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-            {
-              title: 'Microphone Permission',
-              message: 'Braille Tutor needs access to your microphone for voice commands',
-              buttonNeutral: 'Ask Me Later',
-              buttonNegative: 'Cancel',
-              buttonPositive: 'OK',
-            }
-          );
-          if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-            await voiceService.speak('Microphone permission denied. Please enable it in settings.');
-            return;
-          }
-        } catch (err) {
-          console.warn('Permission error:', err);
-        }
-      }
-      
-      setTranscript('');
-      setLastResponse('');
-      const result = await voiceService.startListening();
-      if (result.success) {
-        setIsListening(true);
-        setShowTranscript(true);
-        Animated.timing(transcriptOpacity, {
-          toValue: 1,
-          duration: 200,
-          useNativeDriver: true,
-        }).start();
-        
-        // Announce that we're listening
-        AccessibilityInfo.announceForAccessibility('Listening');
-      } else {
-        // Voice not available - provide feedback with more specific message
-        const message = result.error || "Voice input requires a development build with native modules. This feature isn't available in release builds yet.";
-        await voiceService.speak(message);
+      listeningRef.current = false;
+      return;
+    }
+
+    if (Platform.OS === 'android') {
+      const { PermissionsAndroid } = require('react-native');
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        { title: 'Microphone', message: 'Needed for voice commands', buttonPositive: 'OK' }
+      );
+      if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+        await voiceService.speak('Microphone permission denied. Please enable it in settings.');
+        return;
       }
     }
-  };
 
-  // Toggle expanded view
-  const toggleExpanded = () => {
-    setIsExpanded(!isExpanded);
-    Animated.timing(expandAnim, {
-      toValue: isExpanded ? 0 : 1,
-      duration: 300,
-      useNativeDriver: false,
+    manualStopRef.current = false;
+    setTranscript('');
+    const result = await voiceService.startListening();
+    if (result.success) {
+      setIsListening(true);
+      listeningRef.current = true;
+      showCardFn();
+      AccessibilityInfo.announceForAccessibility('Listening');
+    } else {
+      await voiceService.speak(result.error || 'Voice recognition is not available.');
+    }
+  }, [isListening, showCardFn]);
+
+  // ── History panel toggle (long press) ─────────────────────────────────────
+
+  const handleLongPress = useCallback(() => {
+    const next = !showHistory;
+    setShowHistory(next);
+    Animated.timing(histOpacity, {
+      toValue: next ? 1 : 0, duration: 250, useNativeDriver: true,
     }).start();
-  };
+    if (next) {
+      setHistory(voiceAssistantCore.getHistory());
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+    }
+  }, [showHistory, histOpacity]);
 
-  if (!isVisible || !settings.voiceEnabled) {
+  // ── Dismiss history on outside tap ────────────────────────────────────────
+
+  const dismissHistory = useCallback(() => {
+    setShowHistory(false);
+    Animated.timing(histOpacity, { toValue: 0, duration: 200, useNativeDriver: true }).start();
+  }, [histOpacity]);
+
+  // ── Render guards ─────────────────────────────────────────────────────────
+
+  if (!settings.voiceEnabled) return null;
+
+  const [gradStart, gradEnd] = modeGradient(mode);
+
+  // ── Card content ──────────────────────────────────────────────────────────
+
+  const cardContent = useMemo(() => {
+    if (mode === 'confirming') {
+      return { icon: 'help-circle' as const, color: C.orange, text: lastResponse };
+    }
+    if (transcript && mode !== 'speaking') {
+      return { icon: 'mic' as const, color: C.orange, text: transcript };
+    }
+    if (lastResponse) {
+      return { icon: 'chatbubble-ellipses' as const, color: C.green, text: lastResponse };
+    }
+    if (mode === 'listening') {
+      return { icon: 'mic' as const, color: C.orangeHi, text: 'Listening…' };
+    }
+    if (mode === 'processing') {
+      return { icon: 'ellipsis-horizontal' as const, color: C.purple, text: 'Processing…' };
+    }
     return null;
-  }
+  }, [mode, transcript, lastResponse]);
+
+  // ── JSX ───────────────────────────────────────────────────────────────────
 
   return (
-    <View style={styles.container} pointerEvents="box-none">
-      {/* Transcript/Response Display */}
-      {showTranscript && (
-        <Animated.View 
-          style={[
-            styles.transcriptContainer,
-            { opacity: transcriptOpacity }
-          ]}
-        >
-          <BlurView intensity={80} tint="dark" style={styles.transcriptBlur}>
-            <View style={styles.transcriptContent}>
-              {transcript ? (
-                <>
-                  <Ionicons name="mic" size={16} color={EDU_COLORS.primaryBlue} />
-                  <Text style={styles.transcriptText}>{transcript}</Text>
-                </>
-              ) : lastResponse ? (
-                <>
-                  <Ionicons name="chatbubble" size={16} color={EDU_COLORS.vibrantGreen} />
-                  <Text style={styles.responseText}>{lastResponse}</Text>
-                </>
-              ) : (
-                <>
-                  <Ionicons name="mic" size={16} color={EDU_COLORS.warmOrange} />
-                  <Text style={styles.listeningText}>Listening...</Text>
-                </>
-              )}
-            </View>
-          </BlurView>
-        </Animated.View>
+    <>
+      {/* Tap-outside to dismiss history */}
+      {showHistory && (
+        <TouchableWithoutFeedback onPress={dismissHistory}>
+          <View style={StyleSheet.absoluteFill} />
+        </TouchableWithoutFeedback>
       )}
 
-      {/* Main Voice Button */}
-      <View style={styles.buttonContainer}>
-        <TouchableOpacity
-          onPress={toggleListening}
-          onLongPress={toggleExpanded}
-          activeOpacity={0.8}
-          accessibilityLabel={isListening ? 'Stop listening' : 'Start voice assistant'}
-          accessibilityRole="button"
-          accessibilityState={{ selected: isListening }}
-        >
-          <Animated.View 
-            style={[
-              styles.voiceButton,
-              isListening && styles.voiceButtonActive,
-              { transform: [{ scale: pulseAnim }] }
-            ]}
-          >
-            <LinearGradient
-              colors={
-                isListening 
-                  ? [EDU_COLORS.sunsetOrange, EDU_COLORS.warmOrange]
-                  : isProcessing
-                    ? [EDU_COLORS.softPurple, EDU_COLORS.richPurple]
-                    : [EDU_COLORS.primaryBlue, EDU_COLORS.deepBlue]
-              }
-              style={styles.buttonGradient}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-            >
-              <Ionicons 
-                name={isListening ? 'mic' : isProcessing ? 'ellipsis-horizontal' : 'mic-outline'} 
-                size={28} 
-                color="#FFFFFF" 
-              />
-            </LinearGradient>
+      <View style={styles.root} pointerEvents="box-none">
+
+        {/* ── History panel ──────────────────────────────────────────────── */}
+        {showHistory && (
+          <Animated.View style={[styles.historyPanel, { opacity: histOpacity }]}>
+            <BlurView intensity={90} tint="dark" style={styles.historyBlur}>
+              <View style={styles.historyHeader}>
+                <Text style={styles.historyTitle}>Conversation</Text>
+                <View style={styles.modeBadge}>
+                  <View style={[styles.modeDot, { backgroundColor: online ? C.green : '#888' }]} />
+                  <Text style={styles.modeLabel}>{online ? 'ONLINE' : 'OFFLINE'}</Text>
+                </View>
+              </View>
+              <ScrollView
+                ref={scrollRef}
+                style={styles.historyScroll}
+                showsVerticalScrollIndicator={false}
+              >
+                {history.length === 0 ? (
+                  <Text style={styles.historyEmpty}>No conversation yet. Tap the mic and speak!</Text>
+                ) : (
+                  history.map((entry, i) => (
+                    <View
+                      key={i}
+                      style={[
+                        styles.historyBubble,
+                        entry.role === 'user' ? styles.userBubble : styles.aiBubble,
+                      ]}
+                    >
+                      <Text style={[
+                        styles.bubbleText,
+                        entry.role === 'user' ? styles.userText : styles.aiText,
+                      ]}>
+                        {entry.text}
+                      </Text>
+                    </View>
+                  ))
+                )}
+                <View style={{ height: 12 }} />
+              </ScrollView>
+            </BlurView>
           </Animated.View>
-        </TouchableOpacity>
-
-        {/* Listening indicator ripple */}
-        {isListening && (
-          <>
-            <Animated.View 
-              style={[
-                styles.ripple,
-                {
-                  transform: [{ scale: pulseAnim }],
-                  opacity: pulseAnim.interpolate({
-                    inputRange: [1, 1.3],
-                    outputRange: [0.6, 0],
-                  }),
-                }
-              ]} 
-            />
-            <Animated.View 
-              style={[
-                styles.ripple,
-                styles.rippleSecond,
-                {
-                  transform: [{ scale: Animated.multiply(pulseAnim, 1.2) }],
-                  opacity: pulseAnim.interpolate({
-                    inputRange: [1, 1.3],
-                    outputRange: [0.4, 0],
-                  }),
-                }
-              ]} 
-            />
-          </>
         )}
-      </View>
 
-      {/* Help hint on first use */}
-      {!hasGreeted && (
-        <View style={styles.hintContainer}>
-          <Text style={styles.hintText}>Tap to talk</Text>
+        {/* ── Transcript / response card ──────────────────────────────────── */}
+        {showCard && cardContent && (
+          <Animated.View style={[styles.card, { opacity: cardOpacity }]}>
+            <BlurView intensity={85} tint="dark" style={styles.cardBlur}>
+              <View style={styles.cardRow}>
+                <Ionicons name={cardContent.icon} size={16} color={cardContent.color} />
+                <Text style={[styles.cardText, { color: cardContent.color }]} numberOfLines={3}>
+                  {cardContent.text}
+                </Text>
+              </View>
+            </BlurView>
+          </Animated.View>
+        )}
+
+        {/* ── Mic button ──────────────────────────────────────────────────── */}
+        <View style={styles.buttonWrap}>
+
+          {/* Ripple rings while listening */}
+          {isListening && (
+            <>
+              <Animated.View style={[styles.ring, styles.ring1, {
+                transform: [{ scale: pulseAnim }],
+                opacity: pulseAnim.interpolate({ inputRange: [1, 1.15], outputRange: [0.5, 0] }),
+              }]} />
+              <Animated.View style={[styles.ring, styles.ring2, {
+                transform: [{ scale: Animated.multiply(pulseAnim, 1.3) }],
+                opacity: pulseAnim.interpolate({ inputRange: [1, 1.15], outputRange: [0.3, 0] }),
+              }]} />
+            </>
+          )}
+
+          <TouchableOpacity
+            onPress={handleTap}
+            onLongPress={handleLongPress}
+            delayLongPress={600}
+            activeOpacity={0.82}
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel={isListening ? 'Stop listening' : 'Voice assistant'}
+            accessibilityHint="Tap to speak, long press to see history"
+            accessibilityState={{ selected: isListening }}
+          >
+            <Animated.View style={[styles.button, { transform: [{ scale: pulseAnim }] }]}>
+              <LinearGradient
+                colors={[gradStart, gradEnd]}
+                start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                style={styles.buttonGrad}
+              >
+                {isListening ? (
+                  /* Waveform bars */
+                  <View style={styles.waveform}>
+                    {barAnims.map((anim, i) => (
+                      <Animated.View
+                        key={i}
+                        style={[styles.bar, {
+                          transform: [{ scaleY: anim.interpolate({
+                            inputRange: [0.2, 1],
+                            outputRange: [0.3, 1],
+                          }) }],
+                        }]}
+                      />
+                    ))}
+                  </View>
+                ) : (
+                  <Ionicons name={modeIcon(mode)} size={26} color={C.white} />
+                )}
+              </LinearGradient>
+            </Animated.View>
+          </TouchableOpacity>
         </View>
-      )}
-    </View>
+
+      </View>
+    </>
   );
 };
 
-// Global lesson action handler reference
+// Global lesson action handler
 declare global {
   var lessonActionHandler: ((action: string, params?: Record<string, any>) => void) | undefined;
 }
 
+// ── Styles ────────────────────────────────────────────────────────────────────
+
+const BTN = 62;
+
 const styles = StyleSheet.create({
-  container: {
+  root: {
     position: 'absolute',
     bottom: Platform.OS === 'ios' ? 100 : 80,
-    right: 20,
+    right: 18,
     zIndex: 9999,
     alignItems: 'flex-end',
   },
-  buttonContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
+
+  // ── Button ────────────────────────────────────────────────────────────────
+  buttonWrap: { alignItems: 'center', justifyContent: 'center' },
+  button: {
+    width: BTN, height: BTN, borderRadius: BTN / 2,
+    shadowColor: '#3B82F6', shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.45, shadowRadius: 10, elevation: 10,
   },
-  voiceButton: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    shadowColor: EDU_COLORS.primaryBlue,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    elevation: 8,
+  buttonGrad: {
+    width: BTN, height: BTN, borderRadius: BTN / 2,
+    alignItems: 'center', justifyContent: 'center',
   },
-  voiceButtonActive: {
-    shadowColor: EDU_COLORS.sunsetOrange,
+
+  // ── Ripple rings ─────────────────────────────────────────────────────────
+  ring: {
+    position: 'absolute', borderRadius: 999,
+    backgroundColor: C.orange,
   },
-  buttonGradient: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    alignItems: 'center',
-    justifyContent: 'center',
+  ring1: { width: BTN, height: BTN },
+  ring2: { width: BTN + 20, height: BTN + 20 },
+
+  // ── Waveform ──────────────────────────────────────────────────────────────
+  waveform: {
+    flexDirection: 'row', alignItems: 'center',
+    gap: 4, height: 28,
   },
-  ripple: {
+  bar: {
+    width: 4, height: 24, borderRadius: 2,
+    backgroundColor: C.white,
+  },
+
+  // ── Transcript / response card ────────────────────────────────────────────
+  card: {
     position: 'absolute',
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: EDU_COLORS.sunsetOrange,
-  },
-  rippleSecond: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-  },
-  transcriptContainer: {
-    position: 'absolute',
-    bottom: 80,
+    bottom: BTN + 14,
     right: 0,
-    maxWidth: SCREEN_WIDTH - 60,
-    marginBottom: 10,
+    maxWidth: SW - 52,
+    marginBottom: 4,
   },
-  transcriptBlur: {
-    borderRadius: 16,
+  cardBlur: { borderRadius: 16, overflow: 'hidden' },
+  cardRow: {
+    flexDirection: 'row', alignItems: 'flex-start',
+    paddingHorizontal: 14, paddingVertical: 11, gap: 8,
+  },
+  cardText: {
+    fontSize: 13.5, fontWeight: '500', flex: 1, lineHeight: 19,
+  },
+
+  // ── History panel ─────────────────────────────────────────────────────────
+  historyPanel: {
+    position: 'absolute',
+    bottom: BTN + 18,
+    right: 0,
+    width: Math.min(SW - 36, 340),
+    maxHeight: 420,
+    borderRadius: 20,
     overflow: 'hidden',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.5, shadowRadius: 16, elevation: 20,
   },
-  transcriptContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 8,
+  historyBlur: { flex: 1, borderRadius: 20 },
+  historyHeader: {
+    flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.12)',
   },
-  transcriptText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '500',
-    flex: 1,
+  historyTitle: {
+    color: C.white, fontSize: 15, fontWeight: '700',
   },
-  responseText: {
-    color: EDU_COLORS.vibrantGreen,
-    fontSize: 14,
-    fontWeight: '500',
-    flex: 1,
+  modeBadge: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  modeDot:   { width: 7, height: 7, borderRadius: 3.5 },
+  modeLabel: { color: C.dim, fontSize: 10, fontWeight: '700', letterSpacing: 0.8 },
+
+  historyScroll: { maxHeight: 340 },
+  historyEmpty: {
+    color: C.dim, fontSize: 13, textAlign: 'center',
+    marginTop: 24, marginBottom: 12, paddingHorizontal: 16,
   },
-  listeningText: {
-    color: EDU_COLORS.warmOrange,
-    fontSize: 14,
-    fontWeight: '500',
-    fontStyle: 'italic',
+
+  historyBubble: {
+    marginHorizontal: 12, marginVertical: 4,
+    borderRadius: 14, paddingHorizontal: 12, paddingVertical: 8,
+    maxWidth: '88%',
   },
-  hintContainer: {
-    position: 'absolute',
-    bottom: 70,
-    right: 0,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 12,
+  userBubble: {
+    alignSelf: 'flex-end',
+    backgroundColor: 'rgba(59,130,246,0.35)',
   },
-  hintText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '500',
+  aiBubble: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(255,255,255,0.1)',
   },
+  bubbleText: { fontSize: 13, lineHeight: 18 },
+  userText:   { color: C.white },
+  aiText:     { color: C.dim },
 });
 
 export default VoiceAssistant;

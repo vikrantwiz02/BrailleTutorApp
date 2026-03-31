@@ -91,6 +91,11 @@ class VoiceService {
   private selectedVoice: string | null = null;
   private availableVoices: Speech.Voice[] = [];
   private voiceInitialized: boolean = false;
+  private skipVoiceDiscovery: boolean = false;
+  private lastVoiceInitAttemptAt: number = 0;
+  private isStartingListening: boolean = false;
+  private lastStartListeningAt: number = 0;
+  private readonly START_LISTENING_COOLDOWN_MS = 700;
 
   constructor() {
     this.currentSettings = {
@@ -124,6 +129,17 @@ class VoiceService {
 
   // Initialize and select the best available voice for a language
   private async initializeBestVoice(language: string = 'en-US'): Promise<void> {
+    if (this.skipVoiceDiscovery) {
+      this.voiceInitialized = true;
+      return;
+    }
+
+    const now = Date.now();
+    if (now - this.lastVoiceInitAttemptAt < 3000) {
+      return;
+    }
+    this.lastVoiceInitAttemptAt = now;
+
     try {
       this.availableVoices = await Speech.getAvailableVoicesAsync();
       
@@ -163,7 +179,12 @@ class VoiceService {
 
       this.voiceInitialized = true;
     } catch (error) {
-      console.warn('Failed to initialize voice selection:', error);
+      // Some iOS simulator/runtime setups throw decoding errors for voice list.
+      // Fall back to default platform voice and stop repeated noisy retries.
+      this.skipVoiceDiscovery = true;
+      this.selectedVoice = null;
+      this.voiceInitialized = true;
+      console.warn('Failed to initialize voice selection; using default voice fallback.');
     }
   }
 
@@ -481,7 +502,19 @@ class VoiceService {
       return { success: true, error: null };
     }
 
+    if (this.isStartingListening) {
+      return { success: false, error: 'Voice recognition is already starting.' };
+    }
+
+    const now = Date.now();
+    if (now - this.lastStartListeningAt < this.START_LISTENING_COOLDOWN_MS) {
+      return { success: false, error: 'Please wait a moment before starting voice recognition again.' };
+    }
+
     try {
+      this.isStartingListening = true;
+      this.lastStartListeningAt = now;
+
       // Get current language
       const currentLang = this.getCurrentLanguage();
       console.log(`Starting voice recognition in language: ${currentLang}`);
@@ -502,10 +535,35 @@ class VoiceService {
     } catch (err) {
       console.error('Start listening error:', err);
       this.isListening = false;
+
+      // One cleanup-and-retry for transient iOS recognizer init failures.
+      const errorText = String(err);
+      if (Platform.OS === 'ios' && errorText.toLowerCase().includes('initialize recognizer')) {
+        try {
+          if (Voice?.destroy && typeof Voice.destroy === 'function') {
+            await Voice.destroy();
+          }
+          Voice = null;
+          this.isVoiceInitialized = false;
+          this.voiceRecognitionAvailable = false;
+          await new Promise(resolve => setTimeout(resolve, 350));
+          const reinit = await this.initializeVoiceRecognition();
+          if (reinit.success && Voice?.start && typeof Voice.start === 'function') {
+            await Voice.start(this.getCurrentLanguage());
+            this.isListening = true;
+            return { success: true, error: null };
+          }
+        } catch (retryError) {
+          console.error('Retry start listening failed:', retryError);
+        }
+      }
+
       return { 
         success: false, 
         error: `Voice recognition failed: ${(err as Error).message}. Please ensure microphone permissions are granted.` 
       };
+    } finally {
+      this.isStartingListening = false;
     }
   }
 
@@ -712,7 +770,10 @@ class VoiceService {
 
   private onSpeechError(event: any): void {
     this.isListening = false;
-    this.emitEvent('voiceError', { error: event.error });
+    const errorPayload = event?.error || event || {};
+    const code = errorPayload.code || errorPayload.errorCode || 'unknown';
+    const message = errorPayload.message || errorPayload.errorMessage || String(errorPayload);
+    this.emitEvent('voiceError', { code, message, raw: errorPayload });
   }
 
   private emitEvent(event: string, data: any): void {

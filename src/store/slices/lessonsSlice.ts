@@ -1,7 +1,7 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { allLessons, getLessonContent, generateDefaultContent } from '../../data';
-import { progressService, type UserStats } from '../../services';
-import { offlineSyncService } from '../../services';
+import { progressService, type UserStats } from '../../services/progressService';
+import { offlineSyncService } from '../../services/offlineSyncService';
 
 interface Lesson {
   id: string;

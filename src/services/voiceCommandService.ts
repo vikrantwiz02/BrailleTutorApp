@@ -1,16 +1,15 @@
 // Global Voice Command Service for Accessibility
 import { voiceService } from './voiceService';
-import { aiTutorService } from './aiTutorService';
 
 export type VoiceCommandType = 
   | 'navigate' 
   | 'lesson' 
   | 'print' 
   | 'speech' 
-  | 'ask' 
   | 'settings'
   | 'device'
   | 'notification'
+  | 'status'
   | 'help'
   | 'unknown';
 
@@ -34,9 +33,14 @@ export interface VoiceCommandHandler {
   onUnknownCommand?: (text: string) => void;
 }
 
+interface VoiceCommandHandleOptions {
+  execute?: boolean;
+}
+
 class VoiceCommandService {
   private handlers: VoiceCommandHandler = {};
   private isListening: boolean = false;
+  // Disabled by default because the conversational assistant is the primary processor.
   private isEnabled: boolean = true;
   private currentContext: string = 'home';
   private removeListener: (() => void) | null = null;
@@ -84,9 +88,18 @@ class VoiceCommandService {
       { pattern: /(?:clear|dismiss)\s+(?:notification|alert)/i, action: 'clear' },
       { pattern: /(?:open|show)\s+(?:notification|alert)/i, action: 'open' },
     ],
-    question: [
-      { pattern: /(?:what is|explain|how do|tell me about|describe)\s+(.+)/i, action: 'ask' },
-      { pattern: /(?:ask|question)\s+(.+)/i, action: 'ask' },
+    settings: [
+      { pattern: /(?:turn on|enable)\s+voice/i, action: 'voice_on' },
+      { pattern: /(?:turn off|disable)\s+voice/i, action: 'voice_off' },
+      { pattern: /(?:turn on|enable)\s+auto announce/i, action: 'auto_announce_on' },
+      { pattern: /(?:turn off|disable)\s+auto announce/i, action: 'auto_announce_off' },
+      { pattern: /(?:switch|set)\s+language\s+(?:to\s+)?english/i, action: 'language_english' },
+      { pattern: /(?:switch|set)\s+language\s+(?:to\s+)?hindi/i, action: 'language_hindi' },
+      { pattern: /(?:switch|set)\s+language\s+(?:to\s+)?spanish/i, action: 'language_spanish' },
+    ],
+    status: [
+      { pattern: /(?:where am i|which screen|what screen)/i, action: 'screen' },
+      { pattern: /(?:what can i say|available commands|voice commands)/i, action: 'commands' },
     ],
   };
 
@@ -98,13 +111,7 @@ class VoiceCommandService {
         return result;
       }
 
-      // Set up voice result listener
-      this.removeListener = voiceService.addEventListener((event, data) => {
-        if (event === 'voiceResult' && data.isFinal) {
-          this.processCommand(data.text);
-        }
-      });
-
+      this.isInitialized = true;
       return { success: true, error: null };
     } catch (error) {
       console.error('Voice command init error:', error);
@@ -162,15 +169,42 @@ class VoiceCommandService {
     return this.isListening;
   }
 
+  // Public command entry point for the global VoiceAssistant component
+  async handleVoiceText(text: string, options: VoiceCommandHandleOptions = {}): Promise<VoiceCommand> {
+    const execute = options.execute !== false;
+    return this.processCommand(text, execute);
+  }
+
+  // Parse without executing. Useful for confirmation/undo task pipelines.
+  parseVoiceText(text: string): VoiceCommand {
+    return this.parseCommand(text);
+  }
+
+  // Execute a previously parsed command.
+  async executeParsedCommand(command: VoiceCommand): Promise<void> {
+    await this.executeCommand(command);
+  }
+
   // Process voice command
-  private async processCommand(text: string): Promise<void> {
-    if (!this.isEnabled || !text) return;
+  private async processCommand(text: string, execute: boolean = true): Promise<VoiceCommand> {
+    if (!this.isEnabled || !text) {
+      return {
+        type: 'unknown',
+        action: 'disabled',
+        args: [text],
+        confidence: 0,
+        originalText: text,
+      };
+    }
 
     console.log('[VoiceCommand] Processing:', text);
     const command = this.parseCommand(text);
     console.log('[VoiceCommand] Parsed:', command);
 
-    await this.executeCommand(command);
+    if (execute) {
+      await this.executeCommand(command);
+    }
+    return command;
   }
 
   // Parse text into a command
@@ -257,14 +291,26 @@ class VoiceCommandService {
       }
     }
 
-    // Check question commands (ask AI tutor)
-    for (const { pattern } of this.commandPatterns.question) {
-      const match = lowerText.match(pattern);
-      if (match) {
+    // Check settings commands
+    for (const { pattern, action } of this.commandPatterns.settings) {
+      if (pattern.test(lowerText)) {
         return {
-          type: 'ask',
-          action: 'question',
-          args: [match[1] || text],
+          type: 'settings',
+          action,
+          args: [],
+          confidence: 0.85,
+          originalText: text,
+        };
+      }
+    }
+
+    // Check status commands
+    for (const { pattern, action } of this.commandPatterns.status) {
+      if (pattern.test(lowerText)) {
+        return {
+          type: 'status',
+          action,
+          args: [],
           confidence: 0.85,
           originalText: text,
         };
@@ -337,12 +383,19 @@ class VoiceCommandService {
           }
           break;
 
-        case 'ask':
-          if (this.handlers.onAskTutor) {
-            this.handlers.onAskTutor(command.args[0]);
+        case 'settings':
+          if (this.handlers.onSettingsAction) {
+            this.handlers.onSettingsAction(command.action, command.args[0]);
           } else {
-            // Default: send to AI tutor
-            await this.askAITutor(command.args[0]);
+            await voiceService.speak('Settings command received. Open settings to apply it.');
+          }
+          break;
+
+        case 'status':
+          if (command.action === 'commands') {
+            await this.readAvailableCommands();
+          } else {
+            await voiceService.speak(`You are on ${this.currentContext} screen.`);
           }
           break;
 
@@ -351,8 +404,7 @@ class VoiceCommandService {
           if (this.handlers.onUnknownCommand) {
             this.handlers.onUnknownCommand(command.originalText);
           } else {
-            // Send to AI as a question
-            await this.askAITutor(command.originalText);
+            await voiceService.speak('Sorry, I did not understand that command. Say help to hear available commands.');
           }
           break;
       }
@@ -395,22 +447,6 @@ class VoiceCommandService {
     }
   }
 
-  // Ask AI tutor
-  private async askAITutor(question: string): Promise<void> {
-    try {
-      await voiceService.speak('Let me think about that.');
-      
-      const response = await aiTutorService.sendMessage(question, 'voice-user', {
-        currentLesson: this.currentContext,
-      });
-      
-      await voiceService.speak(response.response);
-    } catch (error) {
-      console.error('AI tutor error:', error);
-      await voiceService.speak("I'm sorry, I couldn't answer that right now.");
-    }
-  }
-
   // Provide audio guidance for current screen
   async announceScreen(screenName: string, details?: string): Promise<void> {
     let announcement = `You are on the ${screenName} screen.`;
@@ -442,13 +478,13 @@ class VoiceCommandService {
         commands += 'Connect, Disconnect, Scan for devices, Device status.';
         break;
       case 'settings':
-        commands += 'Go home, Go to lessons, Voice commands help.';
+        commands += 'Go home, Go to lessons, enable voice, disable voice, set language to English, Hindi, or Spanish.';
         break;
       default:
         commands += 'Go to home, Go to lessons, Go to settings, Help.';
     }
-    
-    commands += ' You can also ask me any question about Braille.';
+
+    commands += ' You can also say open notifications, connect device, and stop speaking.';
     await voiceService.speak(commands);
   }
 

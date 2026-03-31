@@ -35,7 +35,7 @@ cp .env.example .env
 4. **Set up Google Gemini AI (Free tier):**
    - Go to [ai.google.dev](https://ai.google.dev/)
    - Get API key from Google AI Studio
-   - Add to `.env` as `GEMINI_API_KEY`
+  - Add to `.env` as `EXPO_PUBLIC_GEMINI_API_KEY`
 
 5. **Run the app:**
 ```bash
@@ -178,9 +178,9 @@ npm run web
 
 Create `.env` file:
 ```env
-API_BASE_URL=https://api.brailleplotter.com/v1
-OPENAI_API_KEY=your_openai_key_here
-ELEVENLABS_API_KEY=your_elevenlabs_key_here
+EXPO_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co
+EXPO_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
+EXPO_PUBLIC_GEMINI_API_KEY=your-gemini-api-key
 ```
 
 ---

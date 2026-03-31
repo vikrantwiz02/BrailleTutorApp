@@ -61,6 +61,7 @@ class ConversationalAIService {
   private lessonActionHandler: LessonActionHandler | null = null;
   private isProcessing: boolean = false;
   private onStateChangeCallback: ((state: any) => void) | null = null;
+  private aiAvailable: boolean = false;
 
   // System prompt for the AI
   private systemPrompt = `You are a friendly, encouraging Braille tutor assistant named "Braille Buddy". You help visually impaired users learn Braille through voice interaction.
@@ -132,7 +133,9 @@ IMPORTANT RULES:
     }
 
     if (!isGeminiConfigured()) {
-      return { success: false, error: 'AI not configured. Please set up Gemini API key.' };
+      this.aiAvailable = false;
+      this.isInitialized = true;
+      return { success: true, error: 'AI is not configured. Using offline voice intent mode.' };
     }
 
     try {
@@ -165,12 +168,15 @@ IMPORTANT RULES:
         ],
       });
 
+      this.aiAvailable = true;
       this.isInitialized = true;
       console.log('Conversational AI initialized successfully');
       return { success: true };
     } catch (error) {
       console.error('Failed to initialize conversational AI:', error);
-      return { success: false, error: (error as Error).message };
+      this.aiAvailable = false;
+      this.isInitialized = true;
+      return { success: true, error: 'AI initialization failed. Using offline voice intent mode.' };
     }
   }
 
@@ -213,15 +219,48 @@ IMPORTANT RULES:
     this.notifyStateChange({ isProcessing: true });
 
     try {
+      const trimmedText = userText.trim();
+      if (!trimmedText) {
+        return {
+          type: 'conversation',
+          response: 'I did not catch that. Please say that again.',
+          shouldSpeak: true,
+        };
+      }
+
       // Add user message to history
       this.conversationHistory.push({
         role: 'user',
-        content: userText,
+        content: trimmedText,
         timestamp: new Date(),
       });
 
+      // Handle app actions locally first for fast and deterministic behavior.
+      const localIntent = this.parseLocalIntent(trimmedText);
+      if (localIntent) {
+        this.conversationHistory.push({
+          role: 'assistant',
+          content: localIntent.response,
+          timestamp: new Date(),
+        });
+        await this.executeCommand(localIntent);
+        return localIntent;
+      }
+
+      // If AI is unavailable, stay useful with a guided fallback response.
+      if (!this.aiAvailable || !this.chat) {
+        const offlineResponse = this.buildOfflineFallbackResponse(trimmedText);
+        this.conversationHistory.push({
+          role: 'assistant',
+          content: offlineResponse.response,
+          timestamp: new Date(),
+        });
+        await this.executeCommand(offlineResponse);
+        return offlineResponse;
+      }
+
       // Build context message
-      const contextMessage = this.buildContextMessage(userText);
+      const contextMessage = this.buildContextMessage(trimmedText);
 
       // Send to AI
       const result = await this.chat.sendMessage(contextMessage);
@@ -262,14 +301,25 @@ IMPORTANT RULES:
       return aiResponse;
     } catch (error) {
       console.error('Error processing user input:', error);
-      this.isProcessing = false;
-      this.notifyStateChange({ isProcessing: false });
+
+      const errorText = String(error);
+      if (errorText.includes('API_KEY_INVALID') || errorText.includes('API key not valid')) {
+        this.aiAvailable = false;
+        return {
+          type: 'conversation',
+          response: 'Your Gemini API key is invalid. I switched to offline voice control mode so you can keep using commands.',
+          shouldSpeak: true,
+        };
+      }
 
       return {
         type: 'conversation',
         response: "I'm sorry, I had trouble understanding that. Could you please repeat?",
         shouldSpeak: true,
       };
+    } finally {
+      this.isProcessing = false;
+      this.notifyStateChange({ isProcessing: false });
     }
   }
 
@@ -307,14 +357,20 @@ Respond with appropriate action in JSON format.`;
   private async executeCommand(result: AICommandResult): Promise<void> {
     switch (result.type) {
       case 'navigate':
-        if (this.navigationHandler && result.action) {
-          this.navigationHandler(result.action, result.params);
+        if (this.navigationHandler) {
+          const screen = this.normalizeNavigationAction(result.action, result.params);
+          if (screen) {
+            this.navigationHandler(screen, result.params);
+          }
         }
         break;
 
       case 'lesson_action':
-        if (this.lessonActionHandler && result.action) {
-          this.lessonActionHandler(result.action, result.params);
+        if (this.lessonActionHandler) {
+          const lessonAction = this.normalizeLessonAction(result.action);
+          if (lessonAction) {
+            this.lessonActionHandler(lessonAction, result.params);
+          }
         }
         break;
 
@@ -325,8 +381,17 @@ Respond with appropriate action in JSON format.`;
 
       case 'control':
         // Handle app controls like volume, speed
-        if (result.action === 'stop_speaking') {
-          await voiceService.stopSpeaking();
+        if (result.action) {
+          const controlAction = result.action.toLowerCase();
+          if (controlAction === 'stop_speaking' || controlAction === 'stop' || controlAction === 'quiet') {
+            await voiceService.stopSpeaking();
+          }
+          if (controlAction === 'pause_speaking' || controlAction === 'pause') {
+            await voiceService.pauseSpeaking();
+          }
+          if (controlAction === 'resume_speaking' || controlAction === 'resume') {
+            await voiceService.resumeSpeaking();
+          }
         }
         break;
 
@@ -339,6 +404,146 @@ Respond with appropriate action in JSON format.`;
     if (result.shouldSpeak && result.response) {
       await voiceService.speak(result.response);
     }
+  }
+
+  private parseLocalIntent(command: string): AICommandResult | null {
+    const lowerCommand = command.toLowerCase().trim();
+
+    if (/^(help|what can you do|show commands|voice commands)$/.test(lowerCommand)) {
+      return {
+        type: 'help',
+        action: 'help',
+        response: 'You can ask me to navigate, control lessons, check progress, connect devices, or answer Braille questions.',
+        shouldSpeak: true,
+      };
+    }
+
+    if (/(go to|open|show|take me to).*(home|lessons|progress|settings|device|notifications)/.test(lowerCommand)) {
+      if (lowerCommand.includes('notifications')) {
+        return { type: 'navigate', action: 'Notifications', response: 'Opening notifications.', shouldSpeak: true };
+      }
+      if (lowerCommand.includes('home')) {
+        return { type: 'navigate', action: 'Home', response: 'Going to home.', shouldSpeak: true };
+      }
+      if (lowerCommand.includes('lesson')) {
+        return { type: 'navigate', action: 'Lessons', response: 'Opening lessons.', shouldSpeak: true };
+      }
+      if (lowerCommand.includes('progress')) {
+        return { type: 'navigate', action: 'Progress', response: 'Opening progress.', shouldSpeak: true };
+      }
+      if (lowerCommand.includes('setting')) {
+        return { type: 'navigate', action: 'Settings', response: 'Opening settings.', shouldSpeak: true };
+      }
+      if (lowerCommand.includes('device') || lowerCommand.includes('connect')) {
+        return { type: 'navigate', action: 'Device', response: 'Opening device screen.', shouldSpeak: true };
+      }
+    }
+
+    if (/^(next|continue|previous|back|repeat|again|hint|practice|challenge|complete|finish|exit|quit)$/.test(lowerCommand)) {
+      const actionMap: Record<string, string> = {
+        next: 'next',
+        continue: 'next',
+        previous: 'previous',
+        back: 'previous',
+        repeat: 'repeat',
+        again: 'repeat',
+        hint: 'hint',
+        practice: 'practice',
+        challenge: 'challenge',
+        complete: 'complete',
+        finish: 'complete',
+        exit: 'exit',
+        quit: 'exit',
+      };
+      const mapped = actionMap[lowerCommand] || lowerCommand;
+      return {
+        type: 'lesson_action',
+        action: mapped,
+        response: mapped === 'next' || mapped === 'previous' ? '' : `Okay, ${mapped}.`,
+        shouldSpeak: mapped !== 'next' && mapped !== 'previous',
+      };
+    }
+
+    if (/^(stop|quiet|pause|resume)$/.test(lowerCommand)) {
+      const actionMap: Record<string, string> = {
+        stop: 'stop_speaking',
+        quiet: 'stop_speaking',
+        pause: 'pause_speaking',
+        resume: 'resume_speaking',
+      };
+      return {
+        type: 'control',
+        action: actionMap[lowerCommand],
+        response: lowerCommand === 'stop' || lowerCommand === 'quiet' ? '' : `Okay, ${lowerCommand}.`,
+        shouldSpeak: lowerCommand !== 'stop' && lowerCommand !== 'quiet',
+      };
+    }
+
+    if (/(my progress|how many lessons|streak|what lesson am i on|where am i)/.test(lowerCommand)) {
+      const { userProgress, currentLesson } = this.appContext;
+      const lessonInfo = currentLesson
+        ? `You are on ${currentLesson.title}, step ${currentLesson.stepNumber} of ${currentLesson.totalSteps}.`
+        : 'You are not inside an active lesson right now.';
+
+      return {
+        type: 'status',
+        action: 'progress',
+        response: `${lessonInfo} You have completed ${userProgress.totalLessonsCompleted} lessons with a ${userProgress.currentStreak} day streak.`,
+        shouldSpeak: true,
+      };
+    }
+
+    return null;
+  }
+
+  private buildOfflineFallbackResponse(command: string): AICommandResult {
+    return {
+      type: 'conversation',
+      response: `I heard: ${command}. I can control navigation, lessons, speech, and progress in offline mode. Ask me things like go to lessons, next, repeat, hint, or show my progress.`,
+      shouldSpeak: true,
+    };
+  }
+
+  private normalizeNavigationAction(action?: string, params?: Record<string, any>): string | null {
+    const raw = (action || params?.screen || '').toString().trim().toLowerCase();
+    const navMap: Record<string, string> = {
+      home: 'Home',
+      lessons: 'Lessons',
+      lesson: 'Lessons',
+      progress: 'Progress',
+      settings: 'Settings',
+      device: 'Device',
+      notifications: 'Notifications',
+      notification: 'Notifications',
+      main: 'Home',
+    };
+    return navMap[raw] || null;
+  }
+
+  private normalizeLessonAction(action?: string): string | null {
+    if (!action) return null;
+
+    const actionMap: Record<string, string> = {
+      next: 'next',
+      continue: 'next',
+      previous: 'previous',
+      back: 'previous',
+      repeat: 'repeat',
+      again: 'repeat',
+      hint: 'hint',
+      help: 'hint',
+      practice: 'practice',
+      challenge: 'challenge',
+      complete: 'complete',
+      finish: 'complete',
+      exit: 'exit',
+      quit: 'exit',
+      start: 'start',
+      teach: 'teach',
+      status: 'status',
+    };
+
+    return actionMap[action.toLowerCase()] || action;
   }
 
   // Notify state change
@@ -383,7 +588,7 @@ Respond with appropriate action in JSON format.`;
     const lowerCommand = command.toLowerCase().trim();
 
     // Navigation shortcuts
-    if (lowerCommand.includes('go to home') || lowerCommand === 'home') {
+    if (/(go to|open|show|take me to).*(home)|^home$/.test(lowerCommand)) {
       return {
         type: 'navigate',
         action: 'Home',
@@ -392,7 +597,7 @@ Respond with appropriate action in JSON format.`;
       };
     }
 
-    if (lowerCommand.includes('go to lessons') || lowerCommand === 'lessons') {
+    if (/(go to|open|show|take me to).*(lessons)|^lessons$/.test(lowerCommand)) {
       return {
         type: 'navigate',
         action: 'Lessons',
@@ -401,7 +606,7 @@ Respond with appropriate action in JSON format.`;
       };
     }
 
-    if (lowerCommand.includes('go to progress') || lowerCommand === 'progress') {
+    if (/(go to|open|show|take me to).*(progress)|^progress$/.test(lowerCommand)) {
       return {
         type: 'navigate',
         action: 'Progress',
@@ -410,7 +615,7 @@ Respond with appropriate action in JSON format.`;
       };
     }
 
-    if (lowerCommand.includes('go to settings') || lowerCommand === 'settings') {
+    if (/(go to|open|show|take me to).*(settings)|^settings$/.test(lowerCommand)) {
       return {
         type: 'navigate',
         action: 'Settings',
@@ -419,7 +624,7 @@ Respond with appropriate action in JSON format.`;
       };
     }
 
-    if (lowerCommand.includes('connect device') || lowerCommand.includes('go to device')) {
+    if (/(connect|pair).*(device|braille)|((go to|open|show).*(device))|^device$/.test(lowerCommand)) {
       return {
         type: 'navigate',
         action: 'Device',
@@ -428,8 +633,17 @@ Respond with appropriate action in JSON format.`;
       };
     }
 
+    if (/(open|show|read).*(notifications?)|^notifications?$/.test(lowerCommand)) {
+      return {
+        type: 'navigate',
+        action: 'Notifications',
+        response: 'Opening notifications.',
+        shouldSpeak: true,
+      };
+    }
+
     // Lesson control shortcuts
-    if (lowerCommand === 'next' || lowerCommand === 'continue') {
+    if (lowerCommand === 'next' || lowerCommand === 'continue' || lowerCommand === 'go next') {
       return {
         type: 'lesson_action',
         action: 'next',
@@ -438,7 +652,7 @@ Respond with appropriate action in JSON format.`;
       };
     }
 
-    if (lowerCommand === 'previous' || lowerCommand === 'back') {
+    if (lowerCommand === 'previous' || lowerCommand === 'back' || lowerCommand === 'go back') {
       return {
         type: 'lesson_action',
         action: 'previous',
@@ -447,11 +661,20 @@ Respond with appropriate action in JSON format.`;
       };
     }
 
-    if (lowerCommand === 'repeat' || lowerCommand === 'again') {
+    if (lowerCommand === 'repeat' || lowerCommand === 'again' || lowerCommand === 'say that again') {
       return {
         type: 'lesson_action',
         action: 'repeat',
         response: 'Let me repeat that.',
+        shouldSpeak: true,
+      };
+    }
+
+    if (lowerCommand === 'hint' || lowerCommand === 'give me a hint') {
+      return {
+        type: 'lesson_action',
+        action: 'hint',
+        response: 'Here is a hint.',
         shouldSpeak: true,
       };
     }

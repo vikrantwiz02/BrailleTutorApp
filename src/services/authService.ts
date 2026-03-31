@@ -30,16 +30,22 @@ export interface LoginParams {
 }
 
 class AuthService {
+  private normalizeEmail(email: string): string {
+    return email.trim().toLowerCase();
+  }
+
   // Register new user
   async register(params: RegisterParams): Promise<AuthResponse> {
+    const normalizedEmail = this.normalizeEmail(params.email);
+
     if (!isSupabaseConfigured()) {
       // Fallback for development without Supabase
-      return this.mockRegister(params);
+      return this.mockRegister({ ...params, email: normalizedEmail });
     }
 
     try {
       const { data, error } = await supabase.auth.signUp({
-        email: params.email,
+        email: normalizedEmail,
         password: params.password,
         options: {
           data: {
@@ -57,6 +63,37 @@ class AuthService {
         return { user: null, token: null, error: 'Registration failed' };
       }
 
+      // If Supabase returns a user but no session (email confirmation enabled on dashboard),
+      // attempt an immediate sign-in to get a session without requiring verification.
+      if (!data.session?.access_token) {
+        const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+          email: normalizedEmail,
+          password: params.password,
+        });
+
+        if (signInError || !signInData.session?.access_token) {
+          return {
+            user: null,
+            token: null,
+            error: 'Account created but sign-in failed. Please disable "Confirm email" in your Supabase dashboard, then try again.',
+          };
+        }
+
+        const authUser: AuthUser = {
+          id: data.user.id,
+          email: normalizedEmail,
+          name: params.name,
+          age: params.age,
+          created_at: data.user.created_at,
+        };
+
+        return {
+          user: authUser,
+          token: signInData.session.access_token,
+          error: null,
+        };
+      }
+
       // Update profile with additional info
       if (params.age) {
         await supabase
@@ -67,7 +104,7 @@ class AuthService {
 
       const authUser: AuthUser = {
         id: data.user.id,
-        email: data.user.email!,
+        email: normalizedEmail,
         name: params.name,
         created_at: data.user.created_at,
       };
@@ -84,21 +121,30 @@ class AuthService {
 
   // Login existing user
   async login(params: LoginParams): Promise<AuthResponse> {
-    console.log('[AuthService] Login attempt for:', params.email);
+    const normalizedEmail = this.normalizeEmail(params.email);
+    console.log('[AuthService] Login attempt for:', normalizedEmail);
     
     if (!isSupabaseConfigured()) {
       console.log('[AuthService] Supabase not configured, using mock login');
-      return this.mockLogin(params);
+      return this.mockLogin({ ...params, email: normalizedEmail });
     }
 
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: params.email,
+        email: normalizedEmail,
         password: params.password,
       });
 
       if (error) {
         console.error('[AuthService] Login error:', error.message);
+        if (error.message === 'Invalid login credentials') {
+          return {
+            user: null,
+            token: null,
+            error:
+              'Invalid email or password. If you just signed up, verify your email first and then try signing in again.',
+          };
+        }
         return { user: null, token: null, error: error.message };
       }
 
@@ -139,7 +185,16 @@ class AuthService {
       };
     } catch (err) {
       console.error('[AuthService] Login exception:', err);
-      return { user: null, token: null, error: (err as Error).message };
+      const message = (err as Error).message || 'Unknown login error';
+      if (/network request failed/i.test(message)) {
+        return {
+          user: null,
+          token: null,
+          error:
+            'Cannot reach Supabase. Verify EXPO_PUBLIC_SUPABASE_URL and internet/DNS access, then rebuild the app.',
+        };
+      }
+      return { user: null, token: null, error: message };
     }
   }
 
@@ -223,6 +278,26 @@ class AuthService {
 
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email);
+      return { error: error?.message || null };
+    } catch (err) {
+      return { error: (err as Error).message };
+    }
+  }
+
+  // Resend signup verification email
+  async resendVerificationEmail(email: string): Promise<{ error: string | null }> {
+    if (!isSupabaseConfigured()) {
+      return { error: 'Supabase is not configured.' };
+    }
+
+    const normalizedEmail = this.normalizeEmail(email);
+
+    try {
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email: normalizedEmail,
+      });
+
       return { error: error?.message || null };
     } catch (err) {
       return { error: (err as Error).message };

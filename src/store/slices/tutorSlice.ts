@@ -1,6 +1,6 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
-import { aiTutorService, type TutorMessage, type TutorContext } from '../../services';
-import { voiceService } from '../../services';
+import { aiTutorService, type TutorMessage, type TutorContext } from '../../services/aiTutorService';
+import { voiceService } from '../../services/voiceService';
 
 interface TutorState {
   chatHistory: TutorMessage[];
