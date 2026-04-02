@@ -93,14 +93,13 @@ export const completeLessonAsync = createAsyncThunk(
       // Check if online
       if (!offlineSyncService.isNetworkOnline()) {
         console.log('[LessonsSlice] Offline - queuing for later sync');
-        // Queue for later sync
-        await offlineSyncService.queueAction('upsert', 'lesson_progress', {
-          user_id: userId,
-          lesson_id: lessonId,
-          completed: true,
-          score,
-          time_spent: timeSpent,
-          completed_at: new Date().toISOString(),
+        // Queue for later sync securely via RPC
+        await offlineSyncService.queueAction('rpc', 'submit_lesson_progress', {
+          p_lesson_id: lessonId,
+          p_completed: true,
+          p_score: score,
+          p_attempts: 1,
+          p_time_spent: timeSpent,
         });
         return { lessonId, score, timeSpent, synced: false };
       }

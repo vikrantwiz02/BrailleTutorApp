@@ -1,6 +1,19 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
-import { aiTutorService, type TutorMessage, type TutorContext } from '../../services/aiTutorService';
 import { voiceService } from '../../services/voiceService';
+
+export interface TutorMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+}
+
+export interface TutorContext {
+  lessonId?: string;
+  lessonTitle?: string;
+  level?: number;
+  stepNumber?: number;
+}
 
 interface TutorState {
   chatHistory: TutorMessage[];
@@ -32,12 +45,9 @@ export const sendMessage = createAsyncThunk(
     { rejectWithValue, getState }
   ) => {
     try {
-      const response = await aiTutorService.sendMessage(message, userId, context);
-      if (response.error) {
-        console.warn('AI Tutor error:', response.error);
-      }
+      const responseText = "I don't have internet access right now.";
+      const response = { response: responseText, error: null };
       
-      // Speak response if voice is enabled
       const state = getState() as { tutor: TutorState };
       if (state.tutor.voiceEnabled) {
         await voiceService.speakInterruptible(response.response);
@@ -57,9 +67,8 @@ export const getLessonHint = createAsyncThunk(
     { rejectWithValue, getState }
   ) => {
     try {
-      const hint = await aiTutorService.getLessonHint(lessonTitle, stepNumber, userId, lessonId);
+      const hint = "Here is a hint: check your Braille dots layout.";
       
-      // Speak hint if voice is enabled
       const state = getState() as { tutor: TutorState };
       if (state.tutor.voiceEnabled) {
         await voiceService.speakInterruptible(hint);
@@ -79,7 +88,7 @@ export const celebrateCompletion = createAsyncThunk(
     { rejectWithValue, getState }
   ) => {
     try {
-      const celebration = await aiTutorService.celebrateCompletion(lessonTitle, score, userId, lessonId);
+      const celebration = "Congratulations! You have completed the test!";
       
       const state = getState() as { tutor: TutorState };
       if (state.tutor.voiceEnabled) {
@@ -97,8 +106,7 @@ export const loadChatHistory = createAsyncThunk(
   'tutor/loadHistory',
   async (userId: string, { rejectWithValue }) => {
     try {
-      const history = await aiTutorService.loadChatHistory(userId);
-      return history;
+      return [] as TutorMessage[];
     } catch (err) {
       return rejectWithValue((err as Error).message);
     }
@@ -114,7 +122,6 @@ export const startVoiceInput = createAsyncThunk(
         return rejectWithValue(result.error);
       }
       
-      // Set up listener for voice results
       const unsubscribe = voiceService.addEventListener((event, data) => {
         if (event === 'voiceResult' && data.isFinal) {
           dispatch(setVoiceTranscript(data.text));
@@ -169,7 +176,6 @@ const tutorSlice = createSlice({
       state.isListening = false;
     },
     setVoiceTranscript: (state, action: PayloadAction<string>) => {
-      // Add user message from voice
       const userMessage: TutorMessage = {
         id: `msg-${Date.now()}-user`,
         role: 'user',
@@ -186,10 +192,9 @@ const tutorSlice = createSlice({
     },
     clearChat: (state) => {
       state.chatHistory = [];
-      aiTutorService.clearHistory();
     },
     startNewSession: (state) => {
-      state.sessionId = aiTutorService.startNewSession();
+      state.sessionId = Date.now().toString();
       state.chatHistory = [];
     },
     setVoiceEnabled: (state, action: PayloadAction<boolean>) => {
@@ -200,7 +205,6 @@ const tutorSlice = createSlice({
     },
   },
   extraReducers: (builder) => {
-    // Send Message
     builder
       .addCase(sendMessage.pending, (state) => {
         state.isProcessing = true;
@@ -210,7 +214,6 @@ const tutorSlice = createSlice({
         state.isProcessing = false;
         state.currentResponse = action.payload.response;
         
-        // Add assistant message to history
         const assistantMessage: TutorMessage = {
           id: `msg-${Date.now()}-assistant`,
           role: 'assistant',
@@ -224,7 +227,6 @@ const tutorSlice = createSlice({
         state.error = action.payload as string;
       });
 
-    // Get Lesson Hint
     builder
       .addCase(getLessonHint.pending, (state) => {
         state.isProcessing = true;
@@ -238,13 +240,11 @@ const tutorSlice = createSlice({
         state.error = action.payload as string;
       });
 
-    // Load Chat History
     builder
       .addCase(loadChatHistory.fulfilled, (state, action) => {
         state.chatHistory = action.payload;
       });
 
-    // Voice Input
     builder
       .addCase(startVoiceInput.pending, (state) => {
         state.isListening = true;
@@ -262,7 +262,6 @@ const tutorSlice = createSlice({
         state.isListening = false;
       });
 
-    // Speaking
     builder
       .addCase(speakText.pending, (state) => {
         state.isSpeaking = true;
@@ -293,7 +292,6 @@ export const {
   clearError,
 } = tutorSlice.actions;
 
-// Selectors
 export const selectChatHistory = (state: { tutor: TutorState }) => state.tutor.chatHistory;
 export const selectIsListening = (state: { tutor: TutorState }) => state.tutor.isListening;
 export const selectIsSpeaking = (state: { tutor: TutorState }) => state.tutor.isSpeaking;

@@ -16,12 +16,11 @@
 //   core.getHistory()         → ConversationEntry[]
 //   core.setOnModeChange(cb)
 
-import { classify } from './onlineNLU';
 import { classifyOffline } from './offlineNLU';
 import { buildAction, executeAction } from './intentActions';
 import { voiceService } from '../voiceService';
-import { aiTutorService } from '../aiTutorService';
-import { isGeminiConfigured } from '../../config/gemini';
+import Fuse from 'fuse.js';
+import { brailleKnowledgeBase, KnowledgeEntry } from '../../data/knowledgeBase';
 import type {
   AssistantMode,
   AssistantContext,
@@ -57,8 +56,9 @@ class VoiceAssistantCore {
     completedLessonsCount: 0,
     streak: 0,
     deviceConnected: false,
-    isOnline: true,
+    isOnline: false, // Always offline now
   };
+  private fuse: Fuse<KnowledgeEntry> | null = null;
   private handlers: AssistantHandlers = {
     onNavigate: () => {},
     onLessonAction: () => {},
@@ -90,7 +90,7 @@ class VoiceAssistantCore {
 
   getMode(): AssistantMode { return this.mode; }
   getHistory(): ConversationEntry[] { return [...this.history]; }
-  isOnline(): boolean { return this.context.isOnline && isGeminiConfigured(); }
+  isOnline(): boolean { return false; } // Hardcoded to true offline mode
 
   // ── Main entry point ──────────────────────────────────────────────────────
 
@@ -146,12 +146,7 @@ class VoiceAssistantCore {
     }
 
     // ── 3. NLU classification ────────────────────────────────────────────────
-    let nlu: NLUResult;
-    if (this.isOnline()) {
-      nlu = await classify(text, this.context);
-    } else {
-      nlu = classifyOffline(text, this.context.currentScreen);
-    }
+    let nlu: NLUResult = classifyOffline(text, this.context.currentScreen);
 
     // ── 4. Special handling for tutor.ask ────────────────────────────────────
     if (nlu.intent === 'tutor.ask') {
@@ -212,28 +207,25 @@ class VoiceAssistantCore {
   }
 
   private async _handleTutorQuery(question: string): Promise<string> {
-    if (!isGeminiConfigured()) {
-      return await this._speak(
-        "I can answer braille questions when online. Connect to the internet and I will be happy to help."
-      );
+    if (!this.fuse) {
+      this.fuse = new Fuse(brailleKnowledgeBase, {
+        keys: ['query', 'aliases'],
+        threshold: 0.45,
+        includeScore: true,
+      });
     }
 
     try {
-      const state = require('../../store').store.getState();
-      const userId = state.auth.user?.id || 'anonymous';
-      const lesson = this.context.currentLesson;
+      let responseText = "I don't know the answer to that just yet. I am continuously learning more about Braille!";
+      
+      const results = this.fuse.search(question);
+      if (results.length > 0 && results[0].score !== undefined && results[0].score < 0.5) {
+        responseText = results[0].item.response;
+      }
 
-      const tutorContext = lesson ? {
-        lessonId: lesson.id,
-        lessonTitle: lesson.title,
-        level: 1,
-        stepNumber: lesson.stepNumber,
-      } : undefined;
-
-      const result = await aiTutorService.sendMessage(question, userId, tutorContext);
-      return await this._speak(result.response);
+      return await this._speak(responseText);
     } catch {
-      return await this._speak("I couldn't reach the tutor right now. Try again in a moment.");
+      return await this._speak("I am having trouble accessing my knowledge base right now.");
     }
   }
 

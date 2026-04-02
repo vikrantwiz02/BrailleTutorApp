@@ -164,6 +164,14 @@ class OfflineSyncService {
   // Process a single queue item
   private async processQueueItem(item: OfflineQueueItem): Promise<boolean> {
     console.log('[OfflineSyncService] Processing queue item:', { action: item.action, table: item.table });
+    
+    // Support securely invoking RPCs from offline queue
+    if (item.action === 'rpc') {
+      const { error: rpcError } = await supabase.rpc(item.table, item.data);
+      if (rpcError) console.error('[OfflineSyncService] RPC error:', rpcError);
+      return !rpcError;
+    }
+
     // Use type assertion for dynamic table access
     const table = supabase.from(item.table as any);
     

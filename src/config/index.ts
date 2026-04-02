@@ -1,6 +1,6 @@
 // App Configuration
 export * from './supabase';
-export * from './gemini';
+
 
 // Environment
 export const IS_PRODUCTION = process.env.NODE_ENV === 'production';
@@ -11,10 +11,6 @@ export const APP_CONFIG = {
   // App Info
   name: 'Braille Tutor',
   version: '1.0.0',
-  
-  // API Limits
-  geminiRateLimit: 60, // requests per minute
-  geminiDailyLimit: 1500, // requests per day
   
   // BLE Settings
   ble: {

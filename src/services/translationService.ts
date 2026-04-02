@@ -1,6 +1,5 @@
 // Translation Service for Braille Tutor App
-// Uses Gemini AI for real-time translation
-import { geminiModel } from '../config/gemini';
+// Completely offline, static translation fallback
 
 export interface TranslationDict {
   en: string;
@@ -11,9 +10,6 @@ export interface TranslationDict {
 export interface Translations {
   [key: string]: TranslationDict;
 }
-
-// Translation cache to avoid redundant API calls
-const translationCache: Map<string, TranslationDict> = new Map();
 
 // UI Translations
 export const uiTranslations: Translations = {
@@ -147,7 +143,7 @@ export const uiTranslations: Translations = {
 };
 
 // Lesson Content Translations
-export const lessonTranslations = {
+export const lessonTranslations: Translations = {
   // Category titles
   'beginner_alphabet': {
     en: 'Beginner Alphabet',
@@ -226,12 +222,6 @@ class TranslationService {
     'es-ES': 'es',
   };
 
-  private languageNames: Record<string, string> = {
-    'en': 'English',
-    'hi': 'Hindi',
-    'es': 'Spanish',
-  };
-
   setLanguage(language: string): void {
     this.currentLanguage = language;
     console.log(`Translation service language set to: ${language}`);
@@ -241,50 +231,19 @@ class TranslationService {
     return this.languageMap[this.currentLanguage] || 'en';
   }
 
-  // Real-time translation using Gemini AI
   async translateText(text: string, targetLanguage?: 'en' | 'hi' | 'es'): Promise<string> {
     const langCode = targetLanguage || this.getLanguageCode();
     
-    // If already in English and target is English, return as-is
     if (langCode === 'en') {
       return text;
     }
 
-    // Check cache first
-    const cacheKey = `${text}:${langCode}`;
-    if (translationCache.has(cacheKey)) {
-      return translationCache.get(cacheKey)![langCode];
+    if (uiTranslations[text]) {
+      return uiTranslations[text][langCode];
     }
-
-    try {
-      const targetLangName = this.languageNames[langCode];
-      const prompt = `Translate the following text to ${targetLangName}. Provide ONLY the translation, no explanations or additional text:\n\n"${text}"`;
-      
-      const result = await geminiModel.generateContent(prompt);
-      const response = await result.response;
-      const translatedText = response.text().trim();
-      
-      // Cache the result
-      const translations: TranslationDict = {
-        en: text,
-        hi: langCode === 'hi' ? translatedText : text,
-        es: langCode === 'es' ? translatedText : text,
-      };
-      translationCache.set(cacheKey, translations);
-      
-      console.log(`Translated "${text}" to ${targetLangName}: "${translatedText}"`);
-      return translatedText;
-    } catch (error) {
-      console.error('Translation error:', error);
-      // Fallback to UI translations if available
-      if (uiTranslations[text]) {
-        return uiTranslations[text][langCode];
-      }
-      return text;
-    }
+    return text;
   }
 
-  // Batch translate multiple texts
   async translateBatch(texts: string[]): Promise<Record<string, string>> {
     const langCode = this.getLanguageCode();
     
@@ -292,88 +251,36 @@ class TranslationService {
       return texts.reduce((acc, text) => ({ ...acc, [text]: text }), {});
     }
 
-    const targetLangName = this.languageNames[langCode];
     const results: Record<string, string> = {};
-
-    // Check cache first
-    const uncachedTexts: string[] = [];
     for (const text of texts) {
-      const cacheKey = `${text}:${langCode}`;
-      if (translationCache.has(cacheKey)) {
-        results[text] = translationCache.get(cacheKey)![langCode];
-      } else {
-        uncachedTexts.push(text);
-      }
-    }
-
-    if (uncachedTexts.length === 0) {
-      return results;
-    }
-
-    try {
-      const prompt = `Translate the following texts to ${targetLangName}. Return ONLY the translations, one per line, in the same order:\n\n${uncachedTexts.map((t, i) => `${i + 1}. "${t}"`).join('\n')}`;
-      
-      const result = await geminiModel.generateContent(prompt);
-      const response = await result.response;
-      const translations = response.text().trim().split('\n');
-      
-      uncachedTexts.forEach((text, index) => {
-        let translated = translations[index] || text;
-        // Clean up numbered format if present
-        translated = translated.replace(/^\d+\.\s*["']?|["']?$/g, '').trim();
-        
-        results[text] = translated;
-        
-        // Cache the result
-        const translationDict: TranslationDict = {
-          en: text,
-          hi: langCode === 'hi' ? translated : text,
-          es: langCode === 'es' ? translated : text,
-        };
-        translationCache.set(`${text}:${langCode}`, translationDict);
-      });
-      
-      console.log(`Batch translated ${uncachedTexts.length} texts to ${targetLangName}`);
-    } catch (error) {
-      console.error('Batch translation error:', error);
-      // Fallback: return original texts
-      uncachedTexts.forEach(text => {
-        results[text] = uiTranslations[text]?.[langCode] || text;
-      });
+      results[text] = uiTranslations[text]?.[langCode] || text;
     }
 
     return results;
   }
 
-  // Translate with fallback to static translations
   translate(key: string): string {
     const langCode = this.getLanguageCode();
     
-    // Check UI translations first for instant response
     if (uiTranslations[key]) {
       return uiTranslations[key][langCode];
     }
     
-    // Check lesson translations
     if (lessonTranslations[key]) {
       return lessonTranslations[key][langCode];
     }
     
-    // Return key if translation not found
     return key;
   }
 
-  // Translate lesson title with Gemini
   async translateLessonTitle(title: string): Promise<string> {
     return this.translateText(title);
   }
 
-  // Translate lesson description with Gemini
   async translateLessonDescription(description: string): Promise<string> {
     return this.translateText(description);
   }
 
-  // Translate Braille cell description
   translateBraillePattern(dots: number[], letter?: string): string {
     const langCode = this.getLanguageCode();
     
@@ -392,7 +299,6 @@ class TranslationService {
     return templates[langCode];
   }
 
-  // Get all translations for a category
   getCategoryTranslations(category: string): TranslationDict {
     const categories: { [key: string]: TranslationDict } = {
       'alphabet': {
@@ -425,7 +331,6 @@ class TranslationService {
     return categories[category.toLowerCase()] || { en: category, hi: category, es: category };
   }
 
-  // Translate all lessons in a category (batch operation)
   async translateLessons(lessons: Array<{ title: string; description: string }>): Promise<Array<{ title: string; description: string }>> {
     const langCode = this.getLanguageCode();
     
@@ -433,29 +338,14 @@ class TranslationService {
       return lessons;
     }
 
-    // Extract all texts that need translation
-    const titlesToTranslate = lessons.map(l => l.title);
-    const descriptionsToTranslate = lessons.map(l => l.description);
-    
-    try {
-      // Translate in batches
-      const translatedTitles = await this.translateBatch(titlesToTranslate);
-      const translatedDescriptions = await this.translateBatch(descriptionsToTranslate);
-      
-      return lessons.map((lesson, index) => ({
-        title: translatedTitles[lesson.title] || lesson.title,
-        description: translatedDescriptions[lesson.description] || lesson.description,
-      }));
-    } catch (error) {
-      console.error('Error translating lessons:', error);
-      return lessons;
-    }
+    return lessons.map((lesson) => ({
+      title: uiTranslations[lesson.title]?.[langCode] || lesson.title,
+      description: uiTranslations[lesson.description]?.[langCode] || lesson.description,
+    }));
   }
 
-  // Clear translation cache (useful for memory management)
   clearCache(): void {
-    translationCache.clear();
-    console.log('Translation cache cleared');
+    // No-op
   }
 }
 

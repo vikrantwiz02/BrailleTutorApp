@@ -26,7 +26,6 @@ import { useNavigation, useNavigationState } from '@react-navigation/native';
 
 import { voiceService } from '../services/voiceService';
 import { voiceAssistantCore } from '../services/voice/voiceAssistantCore';
-import { isGeminiConfigured } from '../config/gemini';
 import { store } from '../store';
 import type { RootState } from '../store';
 import type { AssistantMode, ConversationEntry } from '../services/voice/types';
@@ -124,7 +123,7 @@ export const VoiceAssistant: React.FC = () => {
   ).current;
 
   // Derived
-  const online = isGeminiConfigured() && settings.voiceEnabled;
+  const online = false;
 
   // ── Sync context to core ──────────────────────────────────────────────────
 

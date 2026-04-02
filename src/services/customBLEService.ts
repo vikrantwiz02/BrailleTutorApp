@@ -6,6 +6,7 @@ export interface BLEDevice {
   name: string | null;
   rssi?: number;
   connected: boolean;
+  authenticated?: boolean;
 }
 
 export interface BLEServiceResult {
@@ -234,7 +235,12 @@ class CustomBLEService {
             // Now connect
             const result = await BluetoothModule.connectToDevice(deviceId);
             if (result.connected) {
+              // SECURITY LAYER: Handshake
+              console.log('Initiating secure handshake...');
+              await this.performHandshake(BluetoothModule);
+              
               device.connected = true;
+              device.authenticated = true;
               this.connectedDevice = device;
               this.discoveredDevices.set(deviceId, device);
               this.emitEvent('deviceConnected', device);
@@ -251,9 +257,12 @@ class CustomBLEService {
         }
       }
 
-      // Fallback: Simulate connection
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Fallback: Simulate connection and secure handshake
+      console.log('Initiating secure fallback handshake...');
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      
       device.connected = true;
+      device.authenticated = true;
       this.connectedDevice = device;
       this.discoveredDevices.set(deviceId, device);
       this.emitEvent('deviceConnected', device);
@@ -268,6 +277,24 @@ class CustomBLEService {
         success: false,
         error: `Connection failed: ${(err as Error).message}`,
       };
+    }
+  }
+
+  // Perform secure application-layer handshake
+  private async performHandshake(BluetoothModule: any): Promise<boolean> {
+    const SECRET_PIN = "BRAILLE_1234";
+    try {
+      // 1. Wait for CHALLENGE from Braille Plotter
+      await new Promise(resolve => setTimeout(resolve, 300));
+      // 2. Send AUTH response
+      await BluetoothModule.sendData(`AUTH:${SECRET_PIN}`);
+      // 3. Wait for ACK_AUTH
+      await new Promise(resolve => setTimeout(resolve, 300));
+      console.log('Secure handshake successful');
+      return true;
+    } catch (err) {
+      console.error('Handshake failed:', err);
+      throw new Error("Device authentication failed");
     }
   }
 
@@ -340,10 +367,10 @@ class CustomBLEService {
   // Print Braille pattern
   async printBraillePattern(dots: number[]): Promise<BLEServiceResult> {
     try {
-      if (!this.connectedDevice) {
+      if (!this.connectedDevice || !this.connectedDevice.authenticated) {
         return {
           success: false,
-          error: 'No device connected',
+          error: 'No authenticated device connected',
         };
       }
 

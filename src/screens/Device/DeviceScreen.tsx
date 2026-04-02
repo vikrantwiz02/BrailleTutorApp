@@ -113,7 +113,7 @@ export const DeviceScreen: React.FC<Props> = ({ navigation }) => {
   useEffect(() => {
     if (!connected) {
       setConnectionHealth('error');
-    } else if (status?.errorCode) {
+    } else if (status === 'error') {
       setConnectionHealth('warning');
     } else {
       setConnectionHealth('good');

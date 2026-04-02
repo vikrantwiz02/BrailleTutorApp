@@ -98,6 +98,12 @@ export const LessonsScreen: React.FC<Props> = ({ navigation }) => {
     dispatch(ensureLessonsLoaded());
   }, [dispatch]);
 
+  // Derive completedIds first so useFocusEffect has it
+  const completedIds = useMemo(
+    () => completed.map((c: any) => c.lessonId),
+    [completed]
+  );
+
   // Voice command support for lessons screen
   useFocusEffect(
     useCallback(() => {
@@ -128,11 +134,6 @@ export const LessonsScreen: React.FC<Props> = ({ navigation }) => {
   const levels = ['Beginner', 'Intermediate', 'Advanced', 'Expert'];
   
   const stats = useMemo(() => getLessonStats(), []);
-  
-  const completedIds = useMemo(
-    () => completed.map((c: any) => c.lessonId),
-    [completed]
-  );
 
   const availableLessonsData = useMemo(
     () => getAvailableLessons(completedIds),

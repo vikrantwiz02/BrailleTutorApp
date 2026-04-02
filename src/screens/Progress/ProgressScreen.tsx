@@ -53,7 +53,7 @@ export const ProgressScreen: React.FC<Props> = ({ navigation }) => {
 
   // Calculate completion IDs for level progress
   const completedLessonIds = useMemo(() => {
-    return completedLessons.map(l => l.lessonId || l.id).filter(Boolean);
+    return completedLessons.map(l => l.lessonId).filter(Boolean);
   }, [completedLessons]);
 
   // Calculate level progress from actual lesson data
@@ -142,7 +142,7 @@ export const ProgressScreen: React.FC<Props> = ({ navigation }) => {
       const minutes = l.timeSpent ? Math.round(l.timeSpent / 60) : 0;
       // If no timeSpent recorded, estimate based on lesson duration
       if (minutes === 0) {
-        const lessonData = allLessons.find(al => al.id === (l.lessonId || l.id));
+        const lessonData = allLessons.find(al => al.id === l.lessonId);
         return sum + (lessonData?.duration_min || 10);
       }
       return sum + minutes;
@@ -403,7 +403,7 @@ export const ProgressScreen: React.FC<Props> = ({ navigation }) => {
             </View>
           ) : (
             completedLessons.slice(0, 5).map((lesson, index) => {
-              const lessonData = allLessons.find(l => l.id === (lesson.lessonId || lesson.id));
+              const lessonData = allLessons.find(l => l.id === lesson.lessonId);
               return (
                 <View key={index} style={styles.activityCard}>
                   <View style={styles.activityIcon}>

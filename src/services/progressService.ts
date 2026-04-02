@@ -65,11 +65,11 @@ class ProgressService {
     }
   }
 
-  // Update or create lesson progress
+  // Update or create lesson progress securely via RPC
   async updateLessonProgress(
     userId: string, 
     progress: LessonProgressUpdate
-  ): Promise<{ data: LessonProgress | null; error: string | null }> {
+  ): Promise<{ data: any; error: string | null }> {
     if (!isSupabaseConfigured()) {
       console.log('[ProgressService] Supabase not configured, skipping save');
       return { data: null, error: null };
@@ -80,65 +80,24 @@ class ProgressService {
       return { data: null, error: 'User ID is required' };
     }
 
-    console.log('[ProgressService] Saving progress for user:', userId, 'lesson:', progress.lessonId);
+    console.log('[ProgressService] Securely saving progress for user:', userId, 'lesson:', progress.lessonId);
 
     try {
-      // Check if progress exists
-      const { data: existingData, error: fetchError } = await supabase
-        .from('lesson_progress')
-        .select('id, attempts')
-        .eq('user_id', userId)
-        .eq('lesson_id', progress.lessonId)
-        .single();
+      const { data, error } = await supabase.rpc('submit_lesson_progress', {
+        p_lesson_id: progress.lessonId,
+        p_completed: progress.completed,
+        p_score: progress.score,
+        p_attempts: progress.attempts,
+        p_time_spent: progress.timeSpent
+      });
 
-      if (fetchError && fetchError.code !== 'PGRST116') {
-        console.error('[ProgressService] Error checking existing progress:', fetchError);
+      if (error) {
+        console.error('[ProgressService] RPC error:', error);
+        return { data: null, error: error.message };
       }
 
-      const existing = existingData as { id: string; attempts: number } | null;
-      
-      const updateData = {
-        user_id: userId,
-        lesson_id: progress.lessonId,
-        completed: progress.completed,
-        score: progress.score,
-        attempts: existing ? existing.attempts + 1 : progress.attempts,
-        time_spent: progress.timeSpent,
-        completed_at: progress.completed ? new Date().toISOString() : null,
-      };
-
-      if (existing) {
-        // Update existing
-        console.log('[ProgressService] Updating existing progress record:', existing.id);
-        const { data, error } = await supabase
-          .from('lesson_progress')
-          .update(updateData as any)
-          .eq('id', existing.id)
-          .select()
-          .single();
-
-        if (error) {
-          console.error('[ProgressService] Update error:', error);
-        } else {
-          console.log('[ProgressService] Progress updated successfully');
-        }
-        return { data: data as LessonProgress | null, error: error?.message || null };
-      } else {
-        // Insert new
-        console.log('[ProgressService] Inserting new progress record');
-        const { data, error } = await supabase
-          .from('lesson_progress')
-          .insert(updateData as any)
-          .select()
-          .single();
-
-        if (error) {
-          console.error('[ProgressService] Insert error:', error);
-        } else {
-          console.log('[ProgressService] Progress saved successfully:', data);
-        }
-        return { data: data as LessonProgress | null, error: error?.message || null };
-      }
+      console.log('[ProgressService] Progress saved successfully via RPC');
+      return { data, error: null };
     } catch (err) {
       console.error('[ProgressService] Exception:', err);
       return { data: null, error: (err as Error).message };
@@ -160,11 +119,7 @@ class ProgressService {
       timeSpent,
     });
 
-    // Also update daily analytics
-    if (!result.error) {
-      await this.updateDailyAnalytics(userId, 1, Math.floor(timeSpent / 60), score);
-    }
-
+    // Analytics are now updated automatically within the secure RPC submit_lesson_progress
     return { error: result.error };
   }
 

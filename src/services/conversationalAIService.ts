@@ -1,13 +1,10 @@
 // Conversational AI Service - Fully Interactive Voice Assistant
-// This service provides a human-like conversational experience throughout the app
+// This service provides a localized conversational experience throughout the app
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import { isGeminiConfigured } from '../config/gemini';
+import Fuse from 'fuse.js';
+import { brailleKnowledgeBase, KnowledgeEntry } from '../data/knowledgeBase';
 import { voiceService } from './voiceService';
 import { store } from '../store';
-
-// Get API key from environment
-const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY || '';
 
 // App state interface for AI context
 export interface AppContext {
@@ -31,7 +28,7 @@ export interface AppContext {
 }
 
 // Conversation message
-interface ConversationMessage {
+export interface ConversationMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
@@ -47,13 +44,11 @@ export interface AICommandResult {
 }
 
 // Navigation handler type
-type NavigationHandler = (screen: string, params?: Record<string, any>) => void;
-type LessonActionHandler = (action: string, params?: Record<string, any>) => void;
+export type NavigationHandler = (screen: string, params?: Record<string, any>) => void;
+export type LessonActionHandler = (action: string, params?: Record<string, any>) => void;
 
 class ConversationalAIService {
-  private genAI: GoogleGenerativeAI | null = null;
-  private model: any = null;
-  private chat: any = null;
+  private fuse: Fuse<KnowledgeEntry> | null = null;
   private conversationHistory: ConversationMessage[] = [];
   private appContext: AppContext;
   private isInitialized: boolean = false;
@@ -61,57 +56,6 @@ class ConversationalAIService {
   private lessonActionHandler: LessonActionHandler | null = null;
   private isProcessing: boolean = false;
   private onStateChangeCallback: ((state: any) => void) | null = null;
-  private aiAvailable: boolean = false;
-
-  // System prompt for the AI
-  private systemPrompt = `You are a friendly, encouraging Braille tutor assistant named "Braille Buddy". You help visually impaired users learn Braille through voice interaction.
-
-Your personality:
-- Warm, patient, and encouraging like a caring teacher
-- Speak naturally and conversationally, not robotically
-- Use simple, clear language
-- Celebrate achievements and provide gentle corrections
-- Be concise but informative
-
-Your capabilities:
-1. NAVIGATION: Guide users through the app
-   - Commands: "go to home", "open lessons", "show progress", "settings", "connect device"
-   
-2. LESSON TEACHING: Actively teach Braille lessons
-   - Start lessons: "start lesson", "begin learning", "teach me"
-   - Control: "next", "previous", "repeat", "give me a hint"
-   - Practice: "quick practice", "challenge me", "quiz"
-   
-3. STATUS: Tell users about their progress
-   - "what lesson am I on", "how many lessons completed", "my progress"
-   - "what's my streak", "how am I doing"
-   
-4. TEACHING CONTENT: Explain Braille concepts
-   - Describe dot patterns naturally: "The letter A is just dot 1 - the top left dot"
-   - Provide mnemonics and tips
-   - Answer questions about Braille
-
-5. CONVERSATION: General helpful responses
-   - Greetings, encouragement, clarifications
-   - Help commands: "help", "what can you do", "how do I..."
-
-RESPONSE FORMAT:
-You must respond in JSON format:
-{
-  "type": "navigate|lesson_action|teach|answer|control|status|help|conversation",
-  "action": "specific action if applicable",
-  "params": { "additional parameters" },
-  "response": "Your spoken response to the user",
-  "shouldSpeak": true
-}
-
-IMPORTANT RULES:
-- Always be encouraging and positive
-- If unsure, ask for clarification
-- Keep responses concise for speech (under 50 words usually)
-- Use natural pauses (commas, periods) for better speech
-- Never use technical jargon
-- Remember the conversation context`;
 
   constructor() {
     this.appContext = {
@@ -132,51 +76,19 @@ IMPORTANT RULES:
       return { success: true };
     }
 
-    if (!isGeminiConfigured()) {
-      this.aiAvailable = false;
-      this.isInitialized = true;
-      return { success: true, error: 'AI is not configured. Using offline voice intent mode.' };
-    }
-
     try {
-      this.genAI = new GoogleGenerativeAI(GEMINI_API_KEY!);
-      this.model = this.genAI.getGenerativeModel({ 
-        model: 'gemini-1.5-flash',
-        generationConfig: {
-          temperature: 0.7,
-          topP: 0.9,
-          topK: 40,
-          maxOutputTokens: 500,
-        },
+      this.fuse = new Fuse(brailleKnowledgeBase, {
+        keys: ['query', 'aliases'],
+        threshold: 0.45,
+        includeScore: true,
       });
 
-      // Start a new chat with system context
-      this.chat = this.model.startChat({
-        history: [
-          {
-            role: 'user',
-            parts: [{ text: this.systemPrompt }],
-          },
-          {
-            role: 'model',
-            parts: [{ text: JSON.stringify({
-              type: 'conversation',
-              response: "Hello! I'm Braille Buddy, your friendly Braille tutor. I'm here to help you learn Braille step by step. Just talk to me naturally - ask questions, tell me to teach you, or navigate the app. How can I help you today?",
-              shouldSpeak: true
-            })}],
-          },
-        ],
-      });
-
-      this.aiAvailable = true;
       this.isInitialized = true;
-      console.log('Conversational AI initialized successfully');
+      console.log('Local AI Engine initialized successfully');
       return { success: true };
     } catch (error) {
-      console.error('Failed to initialize conversational AI:', error);
-      this.aiAvailable = false;
-      this.isInitialized = true;
-      return { success: true, error: 'AI initialization failed. Using offline voice intent mode.' };
+      console.error('Failed to initialize local AI engine:', error);
+      return { success: false, error: 'Local Engine initialization failed.' };
     }
   }
 
@@ -210,7 +122,7 @@ IMPORTANT RULES:
     if (this.isProcessing) {
       return {
         type: 'conversation',
-        response: "Just a moment, I'm still thinking about your last request.",
+        response: "Just a moment, I'm still processing your last request.",
         shouldSpeak: true,
       };
     }
@@ -235,7 +147,7 @@ IMPORTANT RULES:
         timestamp: new Date(),
       });
 
-      // Handle app actions locally first for fast and deterministic behavior.
+      // Handle app actions locally for fast and deterministic behavior.
       const localIntent = this.parseLocalIntent(trimmedText);
       if (localIntent) {
         this.conversationHistory.push({
@@ -247,43 +159,23 @@ IMPORTANT RULES:
         return localIntent;
       }
 
-      // If AI is unavailable, stay useful with a guided fallback response.
-      if (!this.aiAvailable || !this.chat) {
-        const offlineResponse = this.buildOfflineFallbackResponse(trimmedText);
-        this.conversationHistory.push({
-          role: 'assistant',
-          content: offlineResponse.response,
-          timestamp: new Date(),
-        });
-        await this.executeCommand(offlineResponse);
-        return offlineResponse;
-      }
-
-      // Build context message
-      const contextMessage = this.buildContextMessage(trimmedText);
-
-      // Send to AI
-      const result = await this.chat.sendMessage(contextMessage);
-      const responseText = result.response.text();
-
-      // Parse AI response
-      let aiResponse: AICommandResult;
-      try {
-        // Extract JSON from response (handle markdown code blocks)
-        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          aiResponse = JSON.parse(jsonMatch[0]);
-        } else {
-          throw new Error('No JSON found in response');
+      // Local NLP query matching
+      let responseText = "I'm sorry, I don't know the answer to that just yet. To navigate, just say home or lessons.";
+      
+      if (this.fuse) {
+        const results = this.fuse.search(trimmedText);
+        // Ensure a decent confidence map
+        if (results.length > 0 && results[0].score !== undefined && results[0].score < 0.5) {
+          responseText = results[0].item.response;
         }
-      } catch (parseError) {
-        // If parsing fails, treat as conversation
-        aiResponse = {
-          type: 'conversation',
-          response: responseText.replace(/```json|```/g, '').trim(),
-          shouldSpeak: true,
-        };
       }
+
+      // Format engine response
+      const aiResponse: AICommandResult = {
+        type: 'conversation',
+        response: responseText,
+        shouldSpeak: true,
+      };
 
       // Add assistant response to history
       this.conversationHistory.push({
@@ -294,24 +186,9 @@ IMPORTANT RULES:
 
       // Execute commands based on type
       await this.executeCommand(aiResponse);
-
-      this.isProcessing = false;
-      this.notifyStateChange({ isProcessing: false });
-
       return aiResponse;
     } catch (error) {
       console.error('Error processing user input:', error);
-
-      const errorText = String(error);
-      if (errorText.includes('API_KEY_INVALID') || errorText.includes('API key not valid')) {
-        this.aiAvailable = false;
-        return {
-          type: 'conversation',
-          response: 'Your Gemini API key is invalid. I switched to offline voice control mode so you can keep using commands.',
-          shouldSpeak: true,
-        };
-      }
-
       return {
         type: 'conversation',
         response: "I'm sorry, I had trouble understanding that. Could you please repeat?",
@@ -323,8 +200,8 @@ IMPORTANT RULES:
     }
   }
 
-  // Build context message for AI
-  private buildContextMessage(userText: string): string {
+  // Keep context extraction available for potential future local advanced parsing
+  private getContextMessage(): Partial<AppContext> {
     const state = store.getState();
     const lessons = state.lessons;
     const device = state.device;
@@ -338,19 +215,8 @@ IMPORTANT RULES:
       lastLesson: lessons.current?.title,
       overallProgress: Math.round(((lessons.completed?.length || 0) / 260) * 100),
     };
-
-    return `
-CURRENT APP STATE:
-- Screen: ${this.appContext.currentScreen}
-- Current Lesson: ${this.appContext.currentLesson ? `${this.appContext.currentLesson.title} (Step ${this.appContext.currentLesson.stepNumber}/${this.appContext.currentLesson.totalSteps})` : 'None'}
-- Lessons Completed: ${this.appContext.userProgress.totalLessonsCompleted}/260
-- Progress: ${this.appContext.userProgress.overallProgress}%
-- Streak: ${this.appContext.userProgress.currentStreak} days
-- Device Connected: ${this.appContext.deviceConnected ? 'Yes' : 'No'}
-
-USER SAYS: "${userText}"
-
-Respond with appropriate action in JSON format.`;
+    
+    return this.appContext;
   }
 
   // Execute command from AI response
@@ -374,13 +240,7 @@ Respond with appropriate action in JSON format.`;
         }
         break;
 
-      case 'teach':
-        // The response contains the teaching content
-        // It will be spoken by the caller
-        break;
-
       case 'control':
-        // Handle app controls like volume, speed
         if (result.action) {
           const controlAction = result.action.toLowerCase();
           if (controlAction === 'stop_speaking' || controlAction === 'stop' || controlAction === 'quiet') {
@@ -396,7 +256,6 @@ Respond with appropriate action in JSON format.`;
         break;
 
       default:
-        // conversation, status, help, answer - just speak the response
         break;
     }
 
@@ -496,14 +355,6 @@ Respond with appropriate action in JSON format.`;
     return null;
   }
 
-  private buildOfflineFallbackResponse(command: string): AICommandResult {
-    return {
-      type: 'conversation',
-      response: `I heard: ${command}. I can control navigation, lessons, speech, and progress in offline mode. Ask me things like go to lessons, next, repeat, hint, or show my progress.`,
-      shouldSpeak: true,
-    };
-  }
-
   private normalizeNavigationAction(action?: string, params?: Record<string, any>): string | null {
     const raw = (action || params?.screen || '').toString().trim().toLowerCase();
     const navMap: Record<string, string> = {
@@ -583,113 +434,39 @@ Respond with appropriate action in JSON format.`;
     await voiceService.speak(message);
   }
 
-  // Quick command for common actions (doesn't need AI)
+  // Quick command for common actions
   async handleQuickCommand(command: string): Promise<AICommandResult | null> {
     const lowerCommand = command.toLowerCase().trim();
 
-    // Navigation shortcuts
     if (/(go to|open|show|take me to).*(home)|^home$/.test(lowerCommand)) {
-      return {
-        type: 'navigate',
-        action: 'Home',
-        response: 'Going to home screen.',
-        shouldSpeak: true,
-      };
+      return { type: 'navigate', action: 'Home', response: 'Going to home screen.', shouldSpeak: true };
     }
-
     if (/(go to|open|show|take me to).*(lessons)|^lessons$/.test(lowerCommand)) {
-      return {
-        type: 'navigate',
-        action: 'Lessons',
-        response: 'Opening lessons.',
-        shouldSpeak: true,
-      };
+      return { type: 'navigate', action: 'Lessons', response: 'Opening lessons.', shouldSpeak: true };
     }
-
     if (/(go to|open|show|take me to).*(progress)|^progress$/.test(lowerCommand)) {
-      return {
-        type: 'navigate',
-        action: 'Progress',
-        response: 'Showing your progress.',
-        shouldSpeak: true,
-      };
+      return { type: 'navigate', action: 'Progress', response: 'Showing your progress.', shouldSpeak: true };
     }
-
     if (/(go to|open|show|take me to).*(settings)|^settings$/.test(lowerCommand)) {
-      return {
-        type: 'navigate',
-        action: 'Settings',
-        response: 'Opening settings.',
-        shouldSpeak: true,
-      };
+      return { type: 'navigate', action: 'Settings', response: 'Opening settings.', shouldSpeak: true };
     }
-
     if (/(connect|pair).*(device|braille)|((go to|open|show).*(device))|^device$/.test(lowerCommand)) {
-      return {
-        type: 'navigate',
-        action: 'Device',
-        response: 'Opening device connection.',
-        shouldSpeak: true,
-      };
+      return { type: 'navigate', action: 'Device', response: 'Opening device connection.', shouldSpeak: true };
     }
-
     if (/(open|show|read).*(notifications?)|^notifications?$/.test(lowerCommand)) {
-      return {
-        type: 'navigate',
-        action: 'Notifications',
-        response: 'Opening notifications.',
-        shouldSpeak: true,
-      };
+      return { type: 'navigate', action: 'Notifications', response: 'Opening notifications.', shouldSpeak: true };
     }
 
-    // Lesson control shortcuts
-    if (lowerCommand === 'next' || lowerCommand === 'continue' || lowerCommand === 'go next') {
-      return {
-        type: 'lesson_action',
-        action: 'next',
-        response: '',
-        shouldSpeak: false,
-      };
-    }
-
-    if (lowerCommand === 'previous' || lowerCommand === 'back' || lowerCommand === 'go back') {
-      return {
-        type: 'lesson_action',
-        action: 'previous',
-        response: '',
-        shouldSpeak: false,
-      };
-    }
-
-    if (lowerCommand === 'repeat' || lowerCommand === 'again' || lowerCommand === 'say that again') {
-      return {
-        type: 'lesson_action',
-        action: 'repeat',
-        response: 'Let me repeat that.',
-        shouldSpeak: true,
-      };
-    }
-
-    if (lowerCommand === 'hint' || lowerCommand === 'give me a hint') {
-      return {
-        type: 'lesson_action',
-        action: 'hint',
-        response: 'Here is a hint.',
-        shouldSpeak: true,
-      };
-    }
-
+    if (lowerCommand === 'next' || lowerCommand === 'continue' || lowerCommand === 'go next') return { type: 'lesson_action', action: 'next', response: '', shouldSpeak: false };
+    if (lowerCommand === 'previous' || lowerCommand === 'back' || lowerCommand === 'go back') return { type: 'lesson_action', action: 'previous', response: '', shouldSpeak: false };
+    if (lowerCommand === 'repeat' || lowerCommand === 'again' || lowerCommand === 'say that again') return { type: 'lesson_action', action: 'repeat', response: 'Let me repeat that.', shouldSpeak: true };
+    if (lowerCommand === 'hint' || lowerCommand === 'give me a hint') return { type: 'lesson_action', action: 'hint', response: 'Here is a hint.', shouldSpeak: true };
+    
     if (lowerCommand.includes('stop') || lowerCommand.includes('quiet')) {
       await voiceService.stopSpeaking();
-      return {
-        type: 'control',
-        action: 'stop_speaking',
-        response: '',
-        shouldSpeak: false,
-      };
+      return { type: 'control', action: 'stop_speaking', response: '', shouldSpeak: false };
     }
 
-    // Not a quick command, needs AI processing
     return null;
   }
 
@@ -700,26 +477,9 @@ Respond with appropriate action in JSON format.`;
 
   // Clear conversation history
   clearHistory(): void {
-    this.conversationHistory = [];
-    // Reinitialize chat with fresh context
-    if (this.model) {
-      this.chat = this.model.startChat({
-        history: [
-          {
-            role: 'user',
-            parts: [{ text: this.systemPrompt }],
-          },
-          {
-            role: 'model',
-            parts: [{ text: JSON.stringify({
-              type: 'conversation',
-              response: "Conversation cleared. How can I help you?",
-              shouldSpeak: true
-            })}],
-          },
-        ],
-      });
-    }
+    this.conversationHistory = [
+      { role: 'user', content: 'Cleared', timestamp: new Date() }
+    ];
   }
 
   // Check if processing

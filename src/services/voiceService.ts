@@ -100,10 +100,10 @@ class VoiceService {
   constructor() {
     this.currentSettings = {
       language: CONFIG.VOICE.DEFAULT_LANGUAGE,
-      // Slightly lower pitch for more natural sound
-      pitch: 0.95,
-      // Slightly slower rate for clarity and natural flow
-      rate: 0.85,
+      // Tuned to 1.05 for a clearer, slightly higher feminine resonance
+      pitch: 1.05,
+      // Tuned to 0.95 for natural conversational speed
+      rate: 0.95,
       volume: 1.0,
     };
     // Don't initialize voice here - wait until first speak() call

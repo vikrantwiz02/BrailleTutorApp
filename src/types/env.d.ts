@@ -2,7 +2,6 @@
 declare module '@env' {
   export const SUPABASE_URL: string;
   export const SUPABASE_ANON_KEY: string;
-  export const GEMINI_API_KEY: string;
   export const APP_ENV: string;
   export const ENABLE_ANALYTICS: string;
   export const ENABLE_CRASH_REPORTING: string;

@@ -20,7 +20,6 @@
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
-    "@google/generative-ai": "^0.21.0",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-native-community/netinfo": "^11.4.1",
     "@react-native-voice/voice": "^3.2.4",
@@ -44,6 +43,7 @@
     "expo-speech": "~14.0.4",
     "expo-splash-screen": "~31.0.11",
     "expo-status-bar": "~3.0.8",
+    "fuse.js": "^7.1.0",
     "lottie-react-native": "~7.3.1",
     "react": "19.1.0",
     "react-native": "0.81.5",

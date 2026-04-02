@@ -27,7 +27,7 @@ import {
   startVoiceInput,
   stopVoiceInput,
 } from '../../store/slices/tutorSlice';
-import { voiceService, voiceCommandService, bleDeviceService, brailleService, aiTutorService, conversationalAIService } from '../../services';
+import { voiceService, voiceCommandService, bleDeviceService, brailleService, conversationalAIService } from '../../services';
 import { RootStackParamList } from '../../navigation/RootNavigator';
 import { 
   getLessonContent, 
@@ -230,7 +230,7 @@ export const ActiveLessonScreen: React.FC<Props> = ({ navigation, route }) => {
           currentLesson: {
             id: currentLesson.id,
             title: currentLesson.title,
-            level: currentLesson.level,
+            level: Number(currentLesson.level) || 1,
             stepNumber: currentStep + 1,
             totalSteps: lessonContent.steps.length,
             content: lessonContent.steps[currentStep]?.audioScript,
@@ -334,7 +334,7 @@ export const ActiveLessonScreen: React.FC<Props> = ({ navigation, route }) => {
     }
   };
 
-  // Verify user's Braille input using AI
+  // Verify user's Braille input locally
   const verifyBrailleAnswer = async (expectedAnswer: string) => {
     if (!brailleInputBuffer) {
       await voiceService.speak('No input detected. Please try again.');
@@ -343,34 +343,18 @@ export const ActiveLessonScreen: React.FC<Props> = ({ navigation, route }) => {
 
     setWaitingForBrailleInput(false);
     
-    // Use AI to verify the answer with context
-    try {
-      const response = await aiTutorService.sendMessage(
-        `The student was asked to write "${expectedAnswer}" in Braille. They typed: "${brailleInputBuffer}". 
-         Is this correct? Respond with "Correct!" if right, or explain what was wrong and the correct answer if incorrect.
-         Keep response brief for voice output.`,
-        user?.id || 'anonymous',
-        { currentLesson: currentLesson?.title }
-      );
-      
-      await voiceService.speak(response.response);
-      
-      const isCorrect = brailleInputBuffer.toLowerCase() === expectedAnswer.toLowerCase() || 
-                       response.response.toLowerCase().includes('correct');
-      
-      setBrailleInputBuffer('');
-      return isCorrect;
-    } catch (error) {
-      // Fallback to simple comparison
-      const isCorrect = brailleInputBuffer.toLowerCase() === expectedAnswer.toLowerCase();
-      if (isCorrect) {
-        await voiceService.speak('Correct! Great job.');
-      } else {
-        await voiceService.speak(`Incorrect. You typed ${brailleInputBuffer}, but the answer is ${expectedAnswer}.`);
-      }
-      setBrailleInputBuffer('');
-      return isCorrect;
+    const submitted = brailleInputBuffer.toLowerCase();
+    const expected = expectedAnswer.toLowerCase();
+    const isCorrect = submitted === expected;
+    
+    if (isCorrect) {
+      await voiceService.speak('Correct! Great job.');
+    } else {
+      await voiceService.speak(`Incorrect. You typed ${brailleInputBuffer}, but the answer is ${expectedAnswer}.`);
     }
+    
+    setBrailleInputBuffer('');
+    return isCorrect;
   };
 
   // Voice-based question and answer for MCQ challenges

@@ -78,11 +78,8 @@ ALTER TABLE public.lesson_progress ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Users can view own lesson progress" ON public.lesson_progress
     FOR SELECT USING (auth.uid() = user_id);
 
-CREATE POLICY "Users can insert own lesson progress" ON public.lesson_progress
-    FOR INSERT WITH CHECK (auth.uid() = user_id);
-
-CREATE POLICY "Users can update own lesson progress" ON public.lesson_progress
-    FOR UPDATE USING (auth.uid() = user_id);
+-- REVOKED: Users can insert own lesson progress -> Must use submit_completed_lesson RPC
+-- REVOKED: Users can update own lesson progress -> Must use submit_completed_lesson RPC
 
 -- ============================================
 -- USER ANALYTICS TABLE
@@ -110,11 +107,7 @@ ALTER TABLE public.user_analytics ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Users can view own analytics" ON public.user_analytics
     FOR SELECT USING (auth.uid() = user_id);
 
-CREATE POLICY "Users can insert own analytics" ON public.user_analytics
-    FOR INSERT WITH CHECK (auth.uid() = user_id);
-
-CREATE POLICY "Users can update own analytics" ON public.user_analytics
-    FOR UPDATE USING (auth.uid() = user_id);
+-- REVOKED: Users can insert/update own analytics -> Handled by submit_completed_lesson RPC
 
 -- ============================================
 -- ACHIEVEMENTS TABLE
@@ -362,6 +355,77 @@ BEGIN
         ) as longest_streak
     FROM public.lesson_progress
     WHERE user_id = p_user_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SECURE RPC: Submit completed lesson
+CREATE OR REPLACE FUNCTION public.submit_lesson_progress(
+    p_lesson_id TEXT,
+    p_completed BOOLEAN,
+    p_score INTEGER,
+    p_attempts INTEGER,
+    p_time_spent INTEGER
+) RETURNS JSONB AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    v_existing_progress_id UUID;
+    v_existing_attempts INTEGER;
+    v_existing_completed BOOLEAN;
+    v_existing_analytics_id UUID;
+    v_existing_lessons_completed INTEGER;
+    v_existing_practice_minutes INTEGER;
+    v_existing_accuracy_sum INTEGER;
+    v_existing_accuracy_count INTEGER;
+    v_today DATE := CURRENT_DATE;
+BEGIN
+    -- 1. Validate permissions and inputs
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Authentication required';
+    END IF;
+
+    IF p_score < 0 OR p_score > 100 THEN
+        RAISE EXCEPTION 'Invalid score: %', p_score;
+    END IF;
+
+    -- 2. Update lesson_progress securely
+    SELECT id, attempts, completed INTO v_existing_progress_id, v_existing_attempts, v_existing_completed
+    FROM public.lesson_progress
+    WHERE user_id = v_user_id AND lesson_id = p_lesson_id;
+
+    IF v_existing_progress_id IS NOT NULL THEN
+        UPDATE public.lesson_progress
+        SET completed = p_completed OR v_existing_completed,
+            score = GREATEST(score, p_score),
+            attempts = v_existing_attempts + p_attempts,
+            time_spent = time_spent + p_time_spent,
+            completed_at = CASE WHEN (p_completed = TRUE AND v_existing_completed = FALSE) THEN NOW() ELSE completed_at END,
+            updated_at = NOW()
+        WHERE id = v_existing_progress_id;
+    ELSE
+        INSERT INTO public.lesson_progress (user_id, lesson_id, completed, score, attempts, time_spent, completed_at)
+        VALUES (v_user_id, p_lesson_id, p_completed, p_score, p_attempts, p_time_spent, CASE WHEN p_completed THEN NOW() ELSE NULL END);
+    END IF;
+
+    -- 3. Update user_analytics securely (only if time spent > 0 or completed)
+    SELECT id, lessons_completed, practice_minutes, accuracy_sum, accuracy_count 
+    INTO v_existing_analytics_id, v_existing_lessons_completed, v_existing_practice_minutes, v_existing_accuracy_sum, v_existing_accuracy_count
+    FROM public.user_analytics
+    WHERE user_id = v_user_id AND date = v_today;
+
+    IF v_existing_analytics_id IS NOT NULL THEN
+        UPDATE public.user_analytics
+        SET lessons_completed = v_existing_lessons_completed + CASE WHEN (p_completed = TRUE AND (v_existing_completed IS NULL OR v_existing_completed = FALSE)) THEN 1 ELSE 0 END,
+            practice_minutes = v_existing_practice_minutes + (p_time_spent / 60),
+            accuracy_sum = v_existing_accuracy_sum + p_score,
+            accuracy_count = v_existing_accuracy_count + 1,
+            updated_at = NOW()
+        WHERE id = v_existing_analytics_id;
+    ELSE
+        INSERT INTO public.user_analytics (user_id, date, lessons_completed, practice_minutes, accuracy_sum, accuracy_count)
+        VALUES (v_user_id, v_today, CASE WHEN p_completed THEN 1 ELSE 0 END, (p_time_spent / 60), p_score, 1);
+    END IF;
+
+    RETURN jsonb_build_object('success', true, 'message', 'Progress securely saved');
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 

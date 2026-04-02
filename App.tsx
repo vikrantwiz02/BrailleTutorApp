@@ -53,10 +53,16 @@ export default function App() {
             permissions.push(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
           }
           
-          const granted = await PermissionsAndroid.requestMultiple(permissions);
-          console.log('Permissions granted:', granted);
-        } catch (err) {
-          console.warn('Permission request error:', err);
+          setTimeout(async () => {
+            try {
+              const granted = await PermissionsAndroid.requestMultiple(permissions);
+              console.log('Permissions granted:', granted);
+            } catch (err) {
+              console.warn('Permission request error:', err);
+            }
+          }, 500);
+        } catch (error) {
+          console.warn('Top permission wrapper err:', error);
         }
       }
     };
