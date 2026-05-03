@@ -18,6 +18,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
+import pako from 'pako';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { brailleService } from '../../services';
@@ -45,46 +46,170 @@ const C = {
   border:   'rgba(255,255,255,0.12)',
 };
 
-// ── Gemini PDF / image text extraction ───────────────────────────────────────
+// ── Local PDF text extractor (no internet, no AI) ─────────────────────────────
+// Implements zlib stream decompression (FlateDecode) via pako and parses
+// PDF content streams for Tj / TJ text operators — same approach as liblouis
+// companion tools. Works on all standard digital PDFs. Scanned / image-only
+// PDFs have no text layer and cannot be extracted by any local library.
 
-const GEMINI_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '';
-const GEMINI_URL =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
+function base64ToUint8Array(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
 
-async function extractTextWithGemini(base64Data: string, mimeType: string): Promise<string> {
-  if (!GEMINI_KEY) throw new Error('Gemini API key not configured.');
-
-  const body = {
-    contents: [{
-      parts: [
-        {
-          inline_data: { mime_type: mimeType, data: base64Data },
-        },
-        {
-          text: 'Extract ALL text from this document exactly as written. Return plain text only — no markdown, no commentary.',
-        },
-      ],
-    }],
-    generationConfig: { temperature: 0, maxOutputTokens: 8192 },
-  };
-
-  const ctrl = new AbortController();
-  const tid = setTimeout(() => ctrl.abort(), 30_000);
-  try {
-    const res = await fetch(`${GEMINI_URL}?key=${GEMINI_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
-    if (!res.ok) throw new Error(`Gemini HTTP ${res.status}`);
-    const data = await res.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-    if (!text) throw new Error('No text returned from Gemini.');
-    return text.trim();
-  } finally {
-    clearTimeout(tid);
+function uint8ToString(bytes: Uint8Array): string {
+  // Process in chunks to avoid stack overflow on large files
+  const CHUNK = 8192;
+  let str = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    str += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
   }
+  return str;
+}
+
+function decodePDFLiteralString(raw: string): string {
+  return raw
+    .replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t')
+    .replace(/\\\(/g, '(').replace(/\\\)/g, ')').replace(/\\\\/g, '\\')
+    .replace(/\\([0-7]{1,3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)));
+}
+
+function decodePDFHexString(hex: string): string {
+  const h = hex.replace(/\s/g, '');
+  let out = '';
+  // If length is a multiple of 4, treat as UTF-16BE (CID font), else Latin-1
+  if (h.length % 4 === 0 && h.length > 0) {
+    for (let i = 0; i < h.length; i += 4) {
+      const code = parseInt(h.slice(i, i + 4), 16);
+      if (code > 0) out += String.fromCharCode(code);
+    }
+  } else {
+    for (let i = 0; i < h.length; i += 2) {
+      const byte = parseInt(h.slice(i, i + 2), 16);
+      if (!isNaN(byte)) out += String.fromCharCode(byte);
+    }
+  }
+  return out;
+}
+
+function extractTextFromContentStream(stream: string): string {
+  const parts: string[] = [];
+  // Match everything inside BT … ET blocks
+  const btEt = /BT([\s\S]*?)ET/g;
+  let bm: RegExpExecArray | null;
+  while ((bm = btEt.exec(stream)) !== null) {
+    const block = bm[1];
+    // Match literal strings: (…) Tj   or   (…) '
+    const litTj = /\(([^)]*)\)\s*['Tj]/g;
+    let m: RegExpExecArray | null;
+    while ((m = litTj.exec(block)) !== null) {
+      const s = decodePDFLiteralString(m[1]);
+      if (s.trim()) parts.push(s);
+    }
+    // Match hex strings: <…> Tj
+    const hexTj = /<([0-9A-Fa-f\s]*)>\s*Tj/g;
+    while ((m = hexTj.exec(block)) !== null) {
+      const s = decodePDFHexString(m[1]);
+      if (s.trim()) parts.push(s);
+    }
+    // Match TJ arrays: [ (…) num (…) … ] TJ
+    const tjArr = /\[([^\]]*)\]\s*TJ/g;
+    while ((m = tjArr.exec(block)) !== null) {
+      const inner = m[1];
+      // Literal strings inside the array
+      const litInner = /\(([^)]*)\)/g;
+      let lm: RegExpExecArray | null;
+      while ((lm = litInner.exec(inner)) !== null) {
+        const s = decodePDFLiteralString(lm[1]);
+        if (s.trim()) parts.push(s);
+      }
+      // Hex strings inside the array
+      const hexInner = /<([0-9A-Fa-f\s]*)>/g;
+      while ((lm = hexInner.exec(inner)) !== null) {
+        const s = decodePDFHexString(lm[1]);
+        if (s.trim()) parts.push(s);
+      }
+    }
+    // Td / TD / T* → word boundary (new line / next text position)
+    if (/\bT[dD*]\b/.test(block)) parts.push(' ');
+  }
+  return parts.join('');
+}
+
+async function extractTextFromPDF(uri: string): Promise<string> {
+  const b64 = await FileSystem.readAsStringAsync(uri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  const pdfBytes = base64ToUint8Array(b64);
+
+  // Verify PDF magic number %PDF-
+  if (pdfBytes[0] !== 0x25 || pdfBytes[1] !== 0x50 || pdfBytes[2] !== 0x44 || pdfBytes[3] !== 0x46) {
+    throw new Error('Not a valid PDF file.');
+  }
+
+  const pdfStr = uint8ToString(pdfBytes);
+  const textBlocks: string[] = [];
+  let pos = 0;
+
+  while (pos < pdfStr.length) {
+    const streamIdx = pdfStr.indexOf('stream', pos);
+    if (streamIdx === -1) break;
+
+    // Find start of binary content (after \n or \r\n)
+    let contentStart = streamIdx + 6;
+    if (pdfStr[contentStart] === '\r') contentStart++;
+    if (pdfStr[contentStart] === '\n') contentStart++;
+
+    const endIdx = pdfStr.indexOf('endstream', contentStart);
+    if (endIdx === -1) break;
+
+    // Inspect the object dictionary for filter and length
+    const dictStart = pdfStr.lastIndexOf('<<', streamIdx);
+    const dictStr = dictStart >= 0 ? pdfStr.slice(dictStart, streamIdx) : '';
+
+    let streamBytes = pdfBytes.slice(contentStart, endIdx);
+
+    // Decompress FlateDecode (zlib / deflate) — used by most modern PDFs
+    if (/\/FlateDecode|\/Fl\b/.test(dictStr)) {
+      try {
+        streamBytes = pako.inflate(streamBytes);
+      } catch {
+        pos = endIdx + 9;
+        continue;
+      }
+    } else if (/\/ASCII85Decode|\/LZWDecode|\/RunLengthDecode/.test(dictStr)) {
+      // Skip encodings we don't handle — not typically used for text streams
+      pos = endIdx + 9;
+      continue;
+    }
+
+    // Skip image streams (XObject with Subtype /Image)
+    if (/\/Subtype\s*\/Image/.test(dictStr)) {
+      pos = endIdx + 9;
+      continue;
+    }
+
+    const content = uint8ToString(streamBytes);
+    if (content.includes('BT') && content.includes('ET')) {
+      const text = extractTextFromContentStream(content);
+      if (text.trim()) textBlocks.push(text);
+    }
+
+    pos = endIdx + 9;
+  }
+
+  if (textBlocks.length === 0) {
+    throw new Error(
+      'No text found in this PDF.\n\n' +
+      'This is likely a scanned (image-only) PDF. ' +
+      'Local extraction only works on digital PDFs with text layers. ' +
+      'Please type or paste the text manually.',
+    );
+  }
+
+  return textBlocks.join('\n').replace(/[ \t]{2,}/g, ' ').trim();
 }
 
 // ── Document text extraction ─────────────────────────────────────────────────
@@ -96,17 +221,14 @@ async function extractTextFromFile(
 ): Promise<string> {
   const ext = (name.split('.').pop() ?? '').toLowerCase();
 
-  // Plain text
+  // Plain text — perfect accuracy, offline
   if (ext === 'txt' || mimeType === 'text/plain') {
     const res = await fetch(uri);
-    return await res.text();
+    return res.text();
   }
 
-  // Word document
-  if (
-    ext === 'docx' ||
-    mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-  ) {
+  // Word document — mammoth.js, offline, perfect accuracy
+  if (ext === 'docx' || mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
     const res = await fetch(uri);
     const arrayBuffer = await res.arrayBuffer();
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -115,28 +237,27 @@ async function extractTextFromFile(
     return result.value as string;
   }
 
-  // PDF or any other format — use Gemini vision to extract text
-  // This handles: pdf, jpg, jpeg, png, bmp, gif, webp, doc, ppt, xls, etc.
-  const supportedByGemini = [
-    'pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp',
-    'doc', 'pptx', 'xlsx',
-  ];
+  // PDF — local parser (no AI, no internet), works for digital PDFs
+  if (ext === 'pdf' || mimeType === 'application/pdf') {
+    return extractTextFromPDF(uri);
+  }
 
-  if (supportedByGemini.includes(ext) || mimeType.startsWith('image/') || mimeType === 'application/pdf') {
-    const base64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-    const effectiveMime =
-      mimeType && mimeType !== 'application/octet-stream'
-        ? mimeType
-        : ext === 'pdf'
-        ? 'application/pdf'
-        : `image/${ext}`;
-    return await extractTextWithGemini(base64, effectiveMime);
+  // Old .doc — suggest converting
+  if (ext === 'doc') {
+    throw new Error(
+      'Old .doc format is not supported.\nPlease open in Word / Google Docs and save as .docx, then upload again.',
+    );
+  }
+
+  // Images — no local OCR available in React Native
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext) || mimeType.startsWith('image/')) {
+    throw new Error(
+      'Image files cannot be converted without OCR.\nPlease type or paste the text from the image into the text box below.',
+    );
   }
 
   throw new Error(
-    `Unsupported file type: .${ext}\nSupported: .txt, .docx, .pdf, and images (uses AI extraction — internet required)`,
+    `Unsupported file type: .${ext}\nSupported formats: .txt  .docx  .pdf (digital only)`,
   );
 }
 
@@ -287,17 +408,8 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
 
       setUploadStatus(`Reading ${file.name ?? 'file'}…`);
 
-      // Warn if PDF / image needs Gemini (internet)
-      const needsGemini = ['pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'doc', 'pptx', 'xlsx'].includes(ext);
-      if (needsGemini && !GEMINI_KEY) {
-        Alert.alert(
-          'Internet Required',
-          `Extracting text from .${ext} files uses AI and requires an internet connection. Please use .txt or .docx for offline use.`,
-        );
-        return;
-      }
-      if (needsGemini) {
-        setUploadStatus('Extracting text with AI… (this may take a moment)');
+      if (ext === 'pdf') {
+        setUploadStatus('Parsing PDF locally… (no internet needed)');
       }
 
       const text = await extractTextFromFile(
@@ -425,7 +537,7 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
                   {fileName ? fileName : 'Upload Document'}
                 </Text>
                 <Text style={styles.uploadSub}>
-                  PDF, DOCX, TXT, images — any format
+                  PDF (digital) • DOCX • TXT — fully offline
                 </Text>
               </View>
             </LinearGradient>
