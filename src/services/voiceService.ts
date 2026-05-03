@@ -1,13 +1,20 @@
 // Voice Service - Text-to-Speech and Speech-to-Text
 import * as Speech from 'expo-speech';
-import { NativeModules, Platform } from 'react-native';
+import { Platform } from 'react-native';
 import { CONFIG } from '../config';
 
-// Voice recognition import (lazy loaded)
+// Static import — guarantees Metro bundles the native bridge in release builds.
+// Wrapped in try/catch at module level so a missing native module degrades
+// gracefully rather than crashing the whole app.
 let Voice: any = null;
-
-// We'll check availability when actually trying to use it,
-// not at module load time (which can fail prematurely)
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const VoiceModule = require('@react-native-voice/voice');
+  Voice = VoiceModule.default ?? VoiceModule;
+} catch {
+  // Native module not linked (Expo Go) — voice recognition is unavailable
+  Voice = null;
+}
 
 // Premium/natural voice identifiers for different platforms and languages
 // These are high-quality neural/enhanced voices that sound more human
@@ -229,86 +236,52 @@ class VoiceService {
       return { success: this.voiceRecognitionAvailable, error: null };
     }
 
+    // Step 1: require() succeeded but the native bridge might still be missing.
+    // Use duck-typing instead of NativeModules.Voice — TurboModules (newArchEnabled)
+    // does NOT populate NativeModules, but the Voice object itself is still valid.
+    if (!Voice || typeof Voice.isAvailable !== 'function') {
+      this.isVoiceInitialized = true;
+      this.voiceRecognitionAvailable = false;
+      return {
+        success: false,
+        error: 'Voice recognition native module not available on this device.',
+      };
+    }
+
+    // Step 2: device must support speech recognition
     try {
-      // Try native Android voice recognition first
-      if (Platform.OS === 'android') {
-        const VoiceRecognitionModule = NativeModules.VoiceRecognition;
-        if (VoiceRecognitionModule) {
-          const available = await VoiceRecognitionModule.isAvailable();
-          if (available) {
-            console.log('Native voice recognition available!');
-            Voice = VoiceRecognitionModule;
-            
-            // Set up event listeners for native module
-            const { DeviceEventEmitter } = require('react-native');
-            
-            DeviceEventEmitter.addListener('onSpeechStart', () => {
-              this.onSpeechStart();
-            });
-            
-            DeviceEventEmitter.addListener('onSpeechEnd', () => {
-              this.onSpeechEnd();
-            });
-            
-            DeviceEventEmitter.addListener('onSpeechResults', (event: any) => {
-              this.onSpeechResults(event);
-            });
-            
-            DeviceEventEmitter.addListener('onSpeechPartialResults', (event: any) => {
-              this.onSpeechPartialResults(event);
-            });
-            
-            DeviceEventEmitter.addListener('onSpeechError', (event: any) => {
-              this.onSpeechError(event);
-            });
-            
-            console.log('Native voice event listeners registered');
-            
-            this.isVoiceInitialized = true;
-            this.voiceRecognitionAvailable = true;
-            return { success: true, error: null };
-          }
-        }
+      const available = await Voice.isAvailable();
+      if (!available) {
+        this.isVoiceInitialized = true;
+        this.voiceRecognitionAvailable = false;
+        return {
+          success: false,
+          error: 'Speech recognition is not available on this device. Make sure Google App or speech services are installed.',
+        };
       }
+    } catch (err) {
+      console.warn('[VoiceService] isAvailable() failed:', err);
+      // Treat failure as available — some devices throw but still work
+    }
 
-      // Fallback: Try to load @react-native-voice/voice module
-      if (!Voice) {
-        console.log('Attempting to load @react-native-voice/voice module...');
-        const VoiceModule = await import('@react-native-voice/voice');
-        Voice = VoiceModule.default;
-
-        // Verify Voice module is valid
-        if (!Voice) {
-          throw new Error('Voice module loaded but is undefined');
-        }
-
-        console.log('Voice module loaded successfully!');
-
-        // Set up event handlers
-        Voice.onSpeechStart = this.onSpeechStart.bind(this);
-        Voice.onSpeechEnd = this.onSpeechEnd.bind(this);
-        Voice.onSpeechResults = this.onSpeechResults.bind(this);
-        Voice.onSpeechPartialResults = this.onSpeechPartialResults.bind(this);
-        Voice.onSpeechError = this.onSpeechError.bind(this);
-        
-        console.log('Voice event handlers registered');
-      }
+    // Step 3: wire up event handlers
+    try {
+      Voice.onSpeechStart          = this.onSpeechStart.bind(this);
+      Voice.onSpeechEnd            = this.onSpeechEnd.bind(this);
+      Voice.onSpeechResults        = this.onSpeechResults.bind(this);
+      Voice.onSpeechPartialResults = this.onSpeechPartialResults.bind(this);
+      Voice.onSpeechError          = this.onSpeechError.bind(this);
 
       this.isVoiceInitialized = true;
       this.voiceRecognitionAvailable = true;
-      console.log('Voice recognition is now available!');
+      console.log('[VoiceService] Voice recognition ready');
       return { success: true, error: null };
     } catch (err) {
-      const errorMessage = (err as Error).message;
-      console.error('Failed to initialize voice recognition:', errorMessage);
-      // Mark as initialized to avoid retry attempts
+      const msg = (err as Error).message ?? String(err);
+      console.error('[VoiceService] Failed to set up voice handlers:', msg);
       this.isVoiceInitialized = true;
       this.voiceRecognitionAvailable = false;
-      Voice = null;
-      return { 
-        success: false, 
-        error: `Voice recognition not available. This feature requires microphone permissions.` 
-      };
+      return { success: false, error: `Voice setup failed: ${msg}` };
     }
   }
 
@@ -515,53 +488,43 @@ class VoiceService {
       this.isStartingListening = true;
       this.lastStartListeningAt = now;
 
-      // Get current language
       const currentLang = this.getCurrentLanguage();
-      console.log(`Starting voice recognition in language: ${currentLang}`);
-      
-      // Check if using native module or @react-native-voice/voice
-      if (Voice.startListening && typeof Voice.startListening === 'function') {
-        // Native Android module
-        await Voice.startListening(currentLang);
-      } else if (Voice.start && typeof Voice.start === 'function') {
-        // @react-native-voice/voice module
-        await Voice.start(currentLang);
-      } else {
-        throw new Error('No valid start method found on Voice module');
-      }
-      
+      console.log('[VoiceService] Starting recognition, lang:', currentLang);
+      await Voice.start(currentLang);
+
       this.isListening = true;
       return { success: true, error: null };
     } catch (err) {
-      console.error('Start listening error:', err);
+      console.error('[VoiceService] start() error:', err);
       this.isListening = false;
 
-      // One cleanup-and-retry for transient iOS recognizer init failures.
-      const errorText = String(err);
-      if (Platform.OS === 'ios' && errorText.toLowerCase().includes('initialize recognizer')) {
+      const errorText = String((err as Error).message ?? err).toLowerCase();
+
+      // iOS: recognizer failed to init — destroy and retry once
+      if (Platform.OS === 'ios' && errorText.includes('initialize recognizer')) {
         try {
-          if (Voice?.destroy && typeof Voice.destroy === 'function') {
-            await Voice.destroy();
-          }
-          Voice = null;
+          await Voice.destroy();
           this.isVoiceInitialized = false;
           this.voiceRecognitionAvailable = false;
-          await new Promise(resolve => setTimeout(resolve, 350));
+          await new Promise(r => setTimeout(r, 400));
           const reinit = await this.initializeVoiceRecognition();
-          if (reinit.success && Voice?.start && typeof Voice.start === 'function') {
+          if (reinit.success) {
             await Voice.start(this.getCurrentLanguage());
             this.isListening = true;
             return { success: true, error: null };
           }
-        } catch (retryError) {
-          console.error('Retry start listening failed:', retryError);
+        } catch (retryErr) {
+          console.error('[VoiceService] Retry failed:', retryErr);
         }
       }
 
-      return { 
-        success: false, 
-        error: `Voice recognition failed: ${(err as Error).message}. Please ensure microphone permissions are granted.` 
-      };
+      const friendlyError = errorText.includes('permission')
+        ? 'Microphone permission denied. Please allow it in phone settings.'
+        : errorText.includes('network') || errorText.includes('7')
+        ? 'Speech recognition needs internet on this device. Please connect to Wi-Fi or mobile data.'
+        : `Voice recognition failed: ${(err as Error).message}`;
+
+      return { success: false, error: friendlyError };
     } finally {
       this.isStartingListening = false;
     }
@@ -570,38 +533,23 @@ class VoiceService {
   // Stop listening
   async stopListening(): Promise<void> {
     if (!this.isListening || !Voice) return;
-
     try {
-      // Check if using native module or @react-native-voice/voice
-      if (Voice.stopListening && typeof Voice.stopListening === 'function') {
-        // Native Android module
-        await Voice.stopListening();
-      } else if (Voice.stop && typeof Voice.stop === 'function') {
-        // @react-native-voice/voice module
-        await Voice.stop();
-      }
+      await Voice.stop();
       this.isListening = false;
     } catch (err) {
-      console.error('Stop listening error:', err);
+      console.error('[VoiceService] stop() error:', err);
+      this.isListening = false;
     }
   }
 
   // Cancel listening
   async cancelListening(): Promise<void> {
     if (!Voice) return;
-
     try {
-      // Check if using native module or @react-native-voice/voice
-      if (Voice.cancelListening && typeof Voice.cancelListening === 'function') {
-        // Native Android module
-        await Voice.cancelListening();
-      } else if (Voice.cancel && typeof Voice.cancel === 'function') {
-        // @react-native-voice/voice module
-        await Voice.cancel();
-      }
+      await Voice.cancel();
       this.isListening = false;
     } catch (err) {
-      console.error('Cancel listening error:', err);
+      console.error('[VoiceService] cancel() error:', err);
     }
   }
 

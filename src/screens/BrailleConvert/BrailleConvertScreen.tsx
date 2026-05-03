@@ -17,6 +17,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { brailleService } from '../../services';
@@ -29,80 +30,204 @@ type Props = {
 };
 
 const C = {
-  bg:        '#0A0A0F',
-  card:      '#1E293B',
-  cardDark:  '#0F172A',
-  blue:      '#3B82F6',
-  blueDark:  '#2563EB',
-  green:     '#10B981',
-  greenDk:   '#059669',
-  purple:    '#8B5CF6',
-  purpleDk:  '#7C3AED',
-  orange:    '#F59E0B',
-  white:     '#FFFFFF',
-  dim:       'rgba(255,255,255,0.55)',
-  border:    'rgba(255,255,255,0.12)',
+  bg:       '#0A0A0F',
+  card:     '#1E293B',
+  cardDark: '#0F172A',
+  blue:     '#3B82F6',
+  blueDark: '#2563EB',
+  green:    '#10B981',
+  greenDk:  '#059669',
+  purple:   '#8B5CF6',
+  purpleDk: '#7C3AED',
+  orange:   '#F59E0B',
+  white:    '#FFFFFF',
+  dim:      'rgba(255,255,255,0.55)',
+  border:   'rgba(255,255,255,0.12)',
 };
 
-// ── Document text extraction ──────────────────────────────────────────────────
+// ── Gemini PDF / image text extraction ───────────────────────────────────────
+
+const GEMINI_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '';
+const GEMINI_URL =
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
+
+async function extractTextWithGemini(base64Data: string, mimeType: string): Promise<string> {
+  if (!GEMINI_KEY) throw new Error('Gemini API key not configured.');
+
+  const body = {
+    contents: [{
+      parts: [
+        {
+          inline_data: { mime_type: mimeType, data: base64Data },
+        },
+        {
+          text: 'Extract ALL text from this document exactly as written. Return plain text only — no markdown, no commentary.',
+        },
+      ],
+    }],
+    generationConfig: { temperature: 0, maxOutputTokens: 8192 },
+  };
+
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), 30_000);
+  try {
+    const res = await fetch(`${GEMINI_URL}?key=${GEMINI_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`Gemini HTTP ${res.status}`);
+    const data = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    if (!text) throw new Error('No text returned from Gemini.');
+    return text.trim();
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
+// ── Document text extraction ─────────────────────────────────────────────────
 
 async function extractTextFromFile(
   uri: string,
   mimeType: string,
   name: string,
 ): Promise<string> {
-  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  const ext = (name.split('.').pop() ?? '').toLowerCase();
 
+  // Plain text
   if (ext === 'txt' || mimeType === 'text/plain') {
-    const response = await fetch(uri);
-    return await response.text();
+    const res = await fetch(uri);
+    return await res.text();
   }
 
-  if (ext === 'docx' ||
-      mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
-    const response = await fetch(uri);
-    const arrayBuffer = await response.arrayBuffer();
+  // Word document
+  if (
+    ext === 'docx' ||
+    mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ) {
+    const res = await fetch(uri);
+    const arrayBuffer = await res.arrayBuffer();
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const mammoth = require('mammoth');
     const result = await mammoth.extractRawText({ arrayBuffer });
-    return result.value;
+    return result.value as string;
+  }
+
+  // PDF or any other format — use Gemini vision to extract text
+  // This handles: pdf, jpg, jpeg, png, bmp, gif, webp, doc, ppt, xls, etc.
+  const supportedByGemini = [
+    'pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp',
+    'doc', 'pptx', 'xlsx',
+  ];
+
+  if (supportedByGemini.includes(ext) || mimeType.startsWith('image/') || mimeType === 'application/pdf') {
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    const effectiveMime =
+      mimeType && mimeType !== 'application/octet-stream'
+        ? mimeType
+        : ext === 'pdf'
+        ? 'application/pdf'
+        : `image/${ext}`;
+    return await extractTextWithGemini(base64, effectiveMime);
   }
 
   throw new Error(
-    `Unsupported file type: .${ext}\nSupported formats: .txt, .docx`,
+    `Unsupported file type: .${ext}\nSupported: .txt, .docx, .pdf, and images (uses AI extraction — internet required)`,
   );
 }
 
-// ── Build PDF HTML for export ─────────────────────────────────────────────────
+// ── Braille-only PDF ──────────────────────────────────────────────────────────
+//
+// Standard Grade 1 braille print spec:
+//   • Dot diameter : 1.5 mm → ~4.25 pt
+//   • Cell width   : 6 mm   → ~17 pt
+//   • Cell height  : 10 mm  → ~28 pt
+//   • Inter-cell gap: 3.5 mm → included in character spacing
+//
+// We render the Unicode braille characters at 28 pt with letter-spacing of 6 pt
+// and line-height of 1.8 to achieve approximately correct proportions on paper.
+// Margins: 25 mm (≈71 pt) on all sides so nothing is clipped.
 
-function buildPdfHtml(originalText: string, brailleText: string): string {
-  const safeOrig   = originalText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const safeBraille = brailleText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function buildBraillePdf(brailleText: string, sourceInfo: string): string {
+  const safe = brailleText
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // Split into paragraphs (preserve newlines)
+  const paragraphs = safe.split('\n').map(line => `<p>${line || '&nbsp;'}</p>`).join('\n');
 
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8"/>
 <style>
-  body { font-family: Arial, sans-serif; margin: 40px; color: #1a1a1a; }
-  h1   { font-size: 22px; color: #1D4ED8; margin-bottom: 4px; }
-  h2   { font-size: 16px; color: #374151; margin-top: 28px; margin-bottom: 8px; }
-  pre  { font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
-         background: #F9FAFB; padding: 16px; border-radius: 8px; border: 1px solid #E5E7EB; }
-  .braille { font-size: 22px; line-height: 2; letter-spacing: 4px; }
-  footer { margin-top: 40px; font-size: 11px; color: #9CA3AF; }
+  @page {
+    size: A4;
+    margin: 25mm;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    color: #000;
+    background: #fff;
+  }
+  header {
+    border-bottom: 1px solid #ccc;
+    padding-bottom: 6pt;
+    margin-bottom: 18pt;
+  }
+  header h1 {
+    font-size: 11pt;
+    font-weight: bold;
+    margin: 0 0 2pt 0;
+    color: #1D4ED8;
+  }
+  header p {
+    font-size: 8pt;
+    color: #6B7280;
+    margin: 0;
+  }
+  .braille-body p {
+    /* 28pt matches ~10 mm cell height; letter-spacing 5pt ≈ inter-cell gap */
+    font-size: 28pt;
+    line-height: 1.75;
+    letter-spacing: 5pt;
+    margin: 0 0 4pt 0;
+    word-break: break-all;
+    /* Prevent characters spilling past the right margin */
+    overflow-wrap: anywhere;
+  }
+  footer {
+    position: fixed;
+    bottom: 10mm;
+    left: 25mm;
+    right: 25mm;
+    font-size: 7pt;
+    color: #9CA3AF;
+    text-align: center;
+    border-top: 1px solid #e5e7eb;
+    padding-top: 4pt;
+  }
 </style>
 </head>
 <body>
-<h1>Braille Conversion Report</h1>
-<p style="font-size:12px;color:#6B7280;">Generated by BrailleTutor App</p>
+<header>
+  <h1>Braille Document — Grade 1</h1>
+  <p>${sourceInfo} • Generated by BrailleTutor App • ${new Date().toLocaleDateString()}</p>
+</header>
 
-<h2>Original Text</h2>
-<pre>${safeOrig}</pre>
+<div class="braille-body">
+${paragraphs}
+</div>
 
-<h2>Braille Output (Grade 1 Unicode)</h2>
-<pre class="braille">${safeBraille}</pre>
-
-<footer>Grade 1 Braille • BrailleTutor © ${new Date().getFullYear()}</footer>
+<footer>Grade 1 Braille (Unicode) • BrailleTutor © ${new Date().getFullYear()}</footer>
 </body>
 </html>`;
 }
@@ -122,11 +247,11 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
   const [printing, setPrinting]           = useState(false);
   const [exporting, setExporting]         = useState(false);
   const [fileName, setFileName]           = useState<string | null>(null);
-  const [charCount, setCharCount]         = useState(0);
+  const [uploadStatus, setUploadStatus]   = useState('');
 
   const scrollRef = useRef<ScrollView>(null);
 
-  // ── Text conversion ─────────────────────────────────────────────────────────
+  // ── Convert ─────────────────────────────────────────────────────────────────
 
   const handleConvert = useCallback(() => {
     if (!inputText.trim()) {
@@ -138,56 +263,76 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
       const result = brailleService.textToBraille(inputText);
       setBrailleOutput(result.brailleUnicode);
       setBrailleCells(result.cells);
-      setCharCount(result.cells.length);
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 300);
     } finally {
       setConverting(false);
     }
   }, [inputText]);
 
-  // ── Document upload ─────────────────────────────────────────────────────────
+  // ── Upload document ─────────────────────────────────────────────────────────
 
   const handleUpload = useCallback(async () => {
     setUploading(true);
+    setUploadStatus('');
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: [
-          'text/plain',
-          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        ],
+        type: '*/*',          // accept everything — we detect type ourselves
         copyToCacheDirectory: true,
       });
 
       if (result.canceled) return;
 
       const file = result.assets[0];
-      const text = await extractTextFromFile(file.uri, file.mimeType ?? '', file.name ?? '');
+      const ext = (file.name ?? '').split('.').pop()?.toLowerCase() ?? '';
+
+      setUploadStatus(`Reading ${file.name ?? 'file'}…`);
+
+      // Warn if PDF / image needs Gemini (internet)
+      const needsGemini = ['pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'doc', 'pptx', 'xlsx'].includes(ext);
+      if (needsGemini && !GEMINI_KEY) {
+        Alert.alert(
+          'Internet Required',
+          `Extracting text from .${ext} files uses AI and requires an internet connection. Please use .txt or .docx for offline use.`,
+        );
+        return;
+      }
+      if (needsGemini) {
+        setUploadStatus('Extracting text with AI… (this may take a moment)');
+      }
+
+      const text = await extractTextFromFile(
+        file.uri,
+        file.mimeType ?? '',
+        file.name ?? '',
+      );
+
+      if (!text.trim()) {
+        Alert.alert('No Text Found', 'The document appears to be empty or could not be read.');
+        return;
+      }
+
       setInputText(text);
       setFileName(file.name ?? 'document');
       setBrailleOutput('');
       setBrailleCells([]);
+      setUploadStatus(`✓ ${text.length.toLocaleString()} characters extracted`);
     } catch (err) {
       Alert.alert('Upload Failed', (err as Error).message);
+      setUploadStatus('');
     } finally {
       setUploading(false);
     }
   }, []);
 
-  // ── Print via BLE device ────────────────────────────────────────────────────
+  // ── Print via BLE ────────────────────────────────────────────────────────────
 
   const handlePrint = useCallback(async () => {
-    if (!brailleOutput) {
-      Alert.alert('Nothing to Print', 'Convert text to Braille first.');
-      return;
-    }
-    if (!deviceConnected) {
-      Alert.alert('No Device', 'Connect a Braille device first from the Device tab.');
-      return;
-    }
+    if (!brailleOutput) { Alert.alert('Nothing to Print', 'Convert text first.'); return; }
+    if (!deviceConnected) { Alert.alert('No Device', 'Connect a Braille device first.'); return; }
     setPrinting(true);
     try {
       await appDispatch(printBrailleText(inputText));
-      Alert.alert('Print Started', 'Your Braille document is being printed.');
+      Alert.alert('Print Started', 'Printing to Braille device…');
     } catch (err) {
       Alert.alert('Print Failed', (err as Error).message);
     } finally {
@@ -195,16 +340,14 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
     }
   }, [brailleOutput, inputText, deviceConnected, appDispatch]);
 
-  // ── Export as PDF ───────────────────────────────────────────────────────────
+  // ── Export PDF ───────────────────────────────────────────────────────────────
 
   const handleExportPDF = useCallback(async () => {
-    if (!brailleOutput) {
-      Alert.alert('Nothing to Export', 'Convert text to Braille first.');
-      return;
-    }
+    if (!brailleOutput) { Alert.alert('Nothing to Export', 'Convert text first.'); return; }
     setExporting(true);
     try {
-      const html = buildPdfHtml(inputText, brailleOutput);
+      const sourceInfo = fileName ?? 'Manual entry';
+      const html = buildBraillePdf(brailleOutput, sourceInfo);
       const { uri } = await Print.printToFileAsync({ html, base64: false });
 
       const canShare = await Sharing.isAvailableAsync();
@@ -214,34 +357,28 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
           dialogTitle: 'Save Braille PDF',
         });
       } else {
-        Alert.alert('PDF Saved', `Saved to: ${uri}`);
+        Alert.alert('PDF Saved', uri);
       }
     } catch (err) {
       Alert.alert('Export Failed', (err as Error).message);
     } finally {
       setExporting(false);
     }
-  }, [brailleOutput, inputText]);
+  }, [brailleOutput, fileName]);
 
-  // ── Print preview via system dialog ────────────────────────────────────────
+  // ── System print dialog ──────────────────────────────────────────────────────
 
   const handleSystemPrint = useCallback(async () => {
-    if (!brailleOutput) {
-      Alert.alert('Nothing to Print', 'Convert text to Braille first.');
-      return;
-    }
-    const html = buildPdfHtml(inputText, brailleOutput);
+    if (!brailleOutput) { Alert.alert('Nothing to Print', 'Convert text first.'); return; }
+    const html = buildBraillePdf(brailleOutput, fileName ?? 'Manual entry');
     await Print.printAsync({ html });
-  }, [brailleOutput, inputText]);
+  }, [brailleOutput, fileName]);
 
-  // ── Render ───────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────────
 
   return (
     <View style={styles.root}>
-      <LinearGradient
-        colors={[C.cardDark, C.bg]}
-        style={StyleSheet.absoluteFill}
-      />
+      <LinearGradient colors={[C.cardDark, C.bg]} style={StyleSheet.absoluteFill} />
 
       {/* Header */}
       <LinearGradient
@@ -253,7 +390,7 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
         </TouchableOpacity>
         <View style={styles.headerCenter}>
           <Text style={styles.headerTitle}>Braille Converter</Text>
-          <Text style={styles.headerSub}>Grade 1 • 100% accurate</Text>
+          <Text style={styles.headerSub}>Grade 1 • Any document</Text>
         </View>
         <View style={{ width: 36 }} />
       </LinearGradient>
@@ -265,9 +402,10 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* ── Upload section ────────────────────────────────────────────── */}
+        {/* ── Step 1: Input ────────────────────────────────────────────── */}
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>1. Add Text</Text>
+
           <TouchableOpacity
             style={styles.uploadBtn}
             onPress={handleUpload}
@@ -277,23 +415,27 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
             <LinearGradient
               colors={[C.blue, C.blueDark]}
               style={styles.uploadGrad}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
             >
-              {uploading ? (
-                <ActivityIndicator color={C.white} />
-              ) : (
-                <>
-                  <Ionicons name="cloud-upload-outline" size={24} color={C.white} />
-                  <Text style={styles.uploadText}>
-                    {fileName ? `Uploaded: ${fileName}` : 'Upload .docx or .txt'}
-                  </Text>
-                </>
-              )}
+              {uploading
+                ? <ActivityIndicator color={C.white} />
+                : <Ionicons name="cloud-upload-outline" size={22} color={C.white} />}
+              <View style={{ flex: 1 }}>
+                <Text style={styles.uploadTitle}>
+                  {fileName ? fileName : 'Upload Document'}
+                </Text>
+                <Text style={styles.uploadSub}>
+                  PDF, DOCX, TXT, images — any format
+                </Text>
+              </View>
             </LinearGradient>
           </TouchableOpacity>
 
-          <Text style={styles.orLabel}>— or type below —</Text>
+          {uploadStatus ? (
+            <Text style={styles.uploadStatus}>{uploadStatus}</Text>
+          ) : null}
+
+          <Text style={styles.orLabel}>— or type / paste below —</Text>
 
           <TextInput
             style={styles.textInput}
@@ -313,13 +455,13 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
             autoCorrect={false}
           />
           {inputText.length > 0 && (
-            <Text style={styles.charHint}>{inputText.length} characters</Text>
+            <Text style={styles.charHint}>{inputText.length.toLocaleString()} characters</Text>
           )}
         </View>
 
-        {/* ── Convert button ─────────────────────────────────────────────── */}
+        {/* ── Convert button ───────────────────────────────────────────── */}
         <TouchableOpacity
-          style={styles.convertBtn}
+          style={[styles.convertBtn, (!inputText.trim() || converting) && styles.btnDisabled]}
           onPress={handleConvert}
           disabled={converting || !inputText.trim()}
           activeOpacity={0.85}
@@ -327,28 +469,25 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
           <LinearGradient
             colors={[C.purple, C.purpleDk]}
             style={styles.convertGrad}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
           >
-            {converting ? (
-              <ActivityIndicator color={C.white} />
-            ) : (
-              <>
-                <Ionicons name="swap-horizontal" size={20} color={C.white} />
-                <Text style={styles.convertText}>Convert to Braille</Text>
-              </>
-            )}
+            {converting
+              ? <ActivityIndicator color={C.white} />
+              : <Ionicons name="swap-horizontal" size={20} color={C.white} />}
+            <Text style={styles.convertText}>
+              {converting ? 'Converting…' : 'Convert to Braille'}
+            </Text>
           </LinearGradient>
         </TouchableOpacity>
 
-        {/* ── Braille output ─────────────────────────────────────────────── */}
+        {/* ── Braille output ───────────────────────────────────────────── */}
         {brailleOutput.length > 0 && (
           <>
             <View style={styles.section}>
               <View style={styles.outputHeader}>
                 <Text style={styles.sectionLabel}>2. Braille Output</Text>
                 <View style={styles.badge}>
-                  <Text style={styles.badgeText}>{charCount} cells</Text>
+                  <Text style={styles.badgeText}>{brailleCells.length} cells</Text>
                 </View>
               </View>
 
@@ -358,8 +497,8 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
                 </Text>
               </View>
 
-              {/* Cell-by-cell preview (first 50 cells) */}
-              <Text style={styles.cellPreviewLabel}>Cell detail (first 50)</Text>
+              {/* Cell detail strip */}
+              <Text style={styles.cellPreviewLabel}>Cell detail (first 50 cells)</Text>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
@@ -392,12 +531,11 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
               </ScrollView>
             </View>
 
-            {/* ── Action buttons ──────────────────────────────────────────── */}
+            {/* ── Actions ──────────────────────────────────────────────── */}
             <View style={styles.actionsSection}>
               <Text style={styles.sectionLabel}>3. Actions</Text>
-
               <View style={styles.actionsGrid}>
-                {/* Export PDF */}
+
                 <TouchableOpacity
                   style={styles.actionCard}
                   onPress={handleExportPDF}
@@ -405,36 +543,32 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
                   activeOpacity={0.8}
                 >
                   <LinearGradient
-                    colors={['rgba(16,185,129,0.25)', 'rgba(5,150,105,0.15)']}
+                    colors={['rgba(16,185,129,0.25)', 'rgba(5,150,105,0.12)']}
                     style={styles.actionGrad}
                   >
-                    {exporting ? (
-                      <ActivityIndicator color={C.green} />
-                    ) : (
-                      <Ionicons name="document-text" size={28} color={C.green} />
-                    )}
+                    {exporting
+                      ? <ActivityIndicator color={C.green} />
+                      : <Ionicons name="document-text" size={28} color={C.green} />}
                     <Text style={[styles.actionTitle, { color: C.green }]}>Export PDF</Text>
-                    <Text style={styles.actionSub}>Save & share</Text>
+                    <Text style={styles.actionSub}>Braille only, proper margins</Text>
                   </LinearGradient>
                 </TouchableOpacity>
 
-                {/* System Print */}
                 <TouchableOpacity
                   style={styles.actionCard}
                   onPress={handleSystemPrint}
                   activeOpacity={0.8}
                 >
                   <LinearGradient
-                    colors={['rgba(59,130,246,0.25)', 'rgba(37,99,235,0.15)']}
+                    colors={['rgba(59,130,246,0.25)', 'rgba(37,99,235,0.12)']}
                     style={styles.actionGrad}
                   >
                     <Ionicons name="print" size={28} color={C.blue} />
                     <Text style={[styles.actionTitle, { color: C.blue }]}>Print</Text>
-                    <Text style={styles.actionSub}>System printer</Text>
+                    <Text style={styles.actionSub}>System print dialog</Text>
                   </LinearGradient>
                 </TouchableOpacity>
 
-                {/* BLE Device Print */}
                 <TouchableOpacity
                   style={[styles.actionCard, !deviceConnected && styles.actionDisabled]}
                   onPress={handlePrint}
@@ -442,24 +576,21 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
                   activeOpacity={0.8}
                 >
                   <LinearGradient
-                    colors={['rgba(139,92,246,0.25)', 'rgba(109,40,217,0.15)']}
+                    colors={['rgba(139,92,246,0.25)', 'rgba(109,40,217,0.12)']}
                     style={styles.actionGrad}
                   >
-                    {printing ? (
-                      <ActivityIndicator color={C.purple} />
-                    ) : (
-                      <Ionicons name="bluetooth" size={28} color={C.purple} />
-                    )}
+                    {printing
+                      ? <ActivityIndicator color={C.purple} />
+                      : <Ionicons name="bluetooth" size={28} color={C.purple} />}
                     <Text style={[styles.actionTitle, { color: C.purple }]}>
                       Braille Device
                     </Text>
                     <Text style={styles.actionSub}>
-                      {deviceConnected ? 'Print via BLE' : 'Device not connected'}
+                      {deviceConnected ? 'Print via BLE' : 'Not connected'}
                     </Text>
                   </LinearGradient>
                 </TouchableOpacity>
 
-                {/* Clear */}
                 <TouchableOpacity
                   style={styles.actionCard}
                   onPress={() => {
@@ -467,11 +598,12 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
                     setBrailleOutput('');
                     setBrailleCells([]);
                     setFileName(null);
+                    setUploadStatus('');
                   }}
                   activeOpacity={0.8}
                 >
                   <LinearGradient
-                    colors={['rgba(245,158,11,0.25)', 'rgba(217,119,6,0.15)']}
+                    colors={['rgba(245,158,11,0.25)', 'rgba(217,119,6,0.12)']}
                     style={styles.actionGrad}
                   >
                     <Ionicons name="trash-outline" size={28} color={C.orange} />
@@ -484,8 +616,7 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
           </>
         )}
 
-        {/* Bottom padding */}
-        <View style={{ height: 60 }} />
+        <View style={{ height: 80 }} />
       </ScrollView>
     </View>
   );
@@ -494,10 +625,8 @@ export const BrailleConvertScreen: React.FC<Props> = ({ navigation }) => {
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: C.bg,
-  },
+  root: { flex: 1, backgroundColor: C.bg },
+
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -505,162 +634,97 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
   },
   backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 36, height: 36, borderRadius: 18,
     backgroundColor: 'rgba(255,255,255,0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'center', justifyContent: 'center',
   },
-  headerCenter: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: C.white,
-  },
-  headerSub: {
-    fontSize: 12,
-    color: C.dim,
-    marginTop: 2,
-  },
+  headerCenter: { flex: 1, alignItems: 'center' },
+  headerTitle: { fontSize: 18, fontWeight: '700', color: C.white },
+  headerSub: { fontSize: 12, color: C.dim, marginTop: 2 },
 
   scroll: { flex: 1 },
   scrollContent: { padding: 16, paddingTop: 20 },
 
   section: { marginBottom: 20 },
   sectionLabel: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: C.dim,
-    letterSpacing: 0.5,
-    marginBottom: 10,
-    textTransform: 'uppercase',
+    fontSize: 12, fontWeight: '700', color: C.dim,
+    letterSpacing: 0.6, marginBottom: 10, textTransform: 'uppercase',
   },
 
   uploadBtn: {
-    borderRadius: 14,
-    overflow: 'hidden',
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(59,130,246,0.35)',
+    borderRadius: 14, overflow: 'hidden', marginBottom: 8,
+    borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)',
   },
   uploadGrad: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 14,
-    gap: 10,
+    flexDirection: 'row', alignItems: 'center',
+    padding: 14, gap: 12,
   },
-  uploadText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: C.white,
+  uploadTitle: { fontSize: 14, fontWeight: '600', color: C.white },
+  uploadSub: { fontSize: 11, color: 'rgba(255,255,255,0.6)', marginTop: 2 },
+  uploadStatus: {
+    fontSize: 12, color: C.green, marginBottom: 8, paddingHorizontal: 4,
   },
 
   orLabel: {
-    textAlign: 'center',
-    color: 'rgba(255,255,255,0.3)',
-    fontSize: 12,
-    marginBottom: 10,
-    letterSpacing: 0.5,
+    textAlign: 'center', color: 'rgba(255,255,255,0.3)',
+    fontSize: 12, marginVertical: 10, letterSpacing: 0.4,
   },
 
   textInput: {
     backgroundColor: C.card,
-    borderWidth: 1,
-    borderColor: C.border,
-    borderRadius: 14,
-    padding: 14,
-    color: C.white,
-    fontSize: 14,
-    lineHeight: 20,
-    minHeight: 120,
+    borderWidth: 1, borderColor: C.border,
+    borderRadius: 14, padding: 14,
+    color: C.white, fontSize: 14, lineHeight: 20, minHeight: 120,
   },
   charHint: {
-    fontSize: 11,
-    color: 'rgba(255,255,255,0.3)',
-    textAlign: 'right',
-    marginTop: 4,
+    fontSize: 11, color: 'rgba(255,255,255,0.3)',
+    textAlign: 'right', marginTop: 4,
   },
 
   convertBtn: {
-    borderRadius: 14,
-    overflow: 'hidden',
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(139,92,246,0.4)',
+    borderRadius: 14, overflow: 'hidden', marginBottom: 20,
+    borderWidth: 1, borderColor: 'rgba(139,92,246,0.4)',
   },
+  btnDisabled: { opacity: 0.5 },
   convertGrad: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 15,
-    gap: 10,
+    flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'center', paddingVertical: 15, gap: 10,
   },
-  convertText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: C.white,
-  },
+  convertText: { fontSize: 16, fontWeight: '700', color: C.white },
 
   outputHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 10,
+    flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'space-between', marginBottom: 10,
   },
   badge: {
     backgroundColor: 'rgba(139,92,246,0.25)',
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
+    borderRadius: 12, paddingHorizontal: 10, paddingVertical: 3,
   },
-  badgeText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: C.purple,
-  },
+  badgeText: { fontSize: 12, fontWeight: '600', color: C.purple },
 
   brailleCard: {
-    backgroundColor: C.card,
-    borderRadius: 14,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: C.border,
-    marginBottom: 12,
+    backgroundColor: C.card, borderRadius: 14,
+    padding: 16, borderWidth: 1, borderColor: C.border, marginBottom: 12,
   },
   brailleText: {
-    fontSize: 26,
-    lineHeight: 38,
-    letterSpacing: 4,
-    color: C.white,
-    fontWeight: '400',
+    fontSize: 26, lineHeight: 38, letterSpacing: 4,
+    color: C.white, fontWeight: '400',
   },
 
   cellPreviewLabel: {
-    fontSize: 11,
-    color: 'rgba(255,255,255,0.35)',
-    marginBottom: 8,
-    letterSpacing: 0.3,
+    fontSize: 11, color: 'rgba(255,255,255,0.35)',
+    marginBottom: 8, letterSpacing: 0.3,
   },
   cellRow: { marginBottom: 4 },
   cellCard: {
-    backgroundColor: C.card,
-    borderRadius: 10,
-    padding: 8,
-    marginRight: 8,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: C.border,
-    minWidth: 48,
+    backgroundColor: C.card, borderRadius: 10, padding: 8,
+    marginRight: 8, alignItems: 'center',
+    borderWidth: 1, borderColor: C.border, minWidth: 48,
   },
   cellUnicode: { fontSize: 20, color: C.white, marginBottom: 2 },
-  cellChar: { fontSize: 10, color: C.dim, marginBottom: 4 },
+  cellChar:    { fontSize: 10, color: C.dim, marginBottom: 4 },
   dotGrid: { gap: 3 },
-  dotRow: { flexDirection: 'row', gap: 3 },
+  dotRow:  { flexDirection: 'row', gap: 3 },
   dot: {
     width: 8, height: 8, borderRadius: 4,
     backgroundColor: 'rgba(255,255,255,0.15)',
@@ -668,35 +732,18 @@ const styles = StyleSheet.create({
   dotActive: { backgroundColor: C.blue },
 
   actionsSection: { marginBottom: 8 },
-  actionsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
+  actionsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   actionCard: {
-    width: '47%',
-    borderRadius: 14,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: C.border,
+    width: '47%', borderRadius: 14, overflow: 'hidden',
+    borderWidth: 1, borderColor: C.border,
   },
   actionDisabled: { opacity: 0.45 },
   actionGrad: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 16,
-    minHeight: 110,
+    alignItems: 'center', justifyContent: 'center',
+    padding: 16, minHeight: 110,
   },
-  actionTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    marginTop: 8,
-  },
-  actionSub: {
-    fontSize: 11,
-    color: 'rgba(255,255,255,0.45)',
-    marginTop: 2,
-  },
+  actionTitle: { fontSize: 14, fontWeight: '700', marginTop: 8 },
+  actionSub: { fontSize: 11, color: 'rgba(255,255,255,0.45)', marginTop: 2, textAlign: 'center' },
 });
 
 export default BrailleConvertScreen;

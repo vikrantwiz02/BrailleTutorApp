@@ -16,7 +16,11 @@
 # ─── BLE ──────────────────────────────────────────────────────────────────────
 -keep class it.innove.** { *; }
 
-# ─── Voice ────────────────────────────────────────────────────────────────────
+# ─── @react-native-voice/voice ────────────────────────────────────────────────
+# Package com.wenkesj.voice contains the SpeechRecognizer bridge.
+# R8 WILL strip it without these rules, causing NativeModules.Voice = undefined.
+-keep class com.wenkesj.voice.** { *; }
+-keepclassmembers class com.wenkesj.voice.** { *; }
 -keep class com.facebook.react.turbomodule.** { *; }
 
 # ─── Kotlin / coroutines ──────────────────────────────────────────────────────

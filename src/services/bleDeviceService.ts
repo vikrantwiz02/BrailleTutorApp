@@ -112,7 +112,7 @@ class BLEDeviceService {
       
       return new Promise<BrailleDevice[]>((resolve) => {
         setTimeout(() => {
-          BleManager.getDiscoveredPeripherals([]).then((resultsArray) => {
+          BleManager.getDiscoveredPeripherals().then((resultsArray) => {
             const devices: BrailleDevice[] = resultsArray.map(device => ({
               id: device.id,
               name: device.name || 'Unknown Device',
