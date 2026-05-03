@@ -17,6 +17,7 @@
 //   core.setOnModeChange(cb)
 
 import { classifyOffline } from './offlineNLU';
+import { classifyOnline, askTutorOnline, isOnlineNLUAvailable } from './onlineNLU';
 import { buildAction, executeAction } from './intentActions';
 import { voiceService } from '../voiceService';
 import Fuse from 'fuse.js';
@@ -56,7 +57,7 @@ class VoiceAssistantCore {
     completedLessonsCount: 0,
     streak: 0,
     deviceConnected: false,
-    isOnline: false, // Always offline now
+    isOnline: isOnlineNLUAvailable(),
   };
   private fuse: Fuse<KnowledgeEntry> | null = null;
   private handlers: AssistantHandlers = {
@@ -90,7 +91,7 @@ class VoiceAssistantCore {
 
   getMode(): AssistantMode { return this.mode; }
   getHistory(): ConversationEntry[] { return [...this.history]; }
-  isOnline(): boolean { return false; } // Hardcoded to true offline mode
+  isOnline(): boolean { return isOnlineNLUAvailable(); }
 
   // ── Main entry point ──────────────────────────────────────────────────────
 
@@ -145,8 +146,16 @@ class VoiceAssistantCore {
       return await this._handleUndo();
     }
 
-    // ── 3. NLU classification ────────────────────────────────────────────────
+    // ── 3. NLU classification — offline first, online upgrade ───────────────
     let nlu: NLUResult = classifyOffline(text, this.context.currentScreen);
+
+    // Run online classification in parallel; use it if it wins confidence
+    if (isOnlineNLUAvailable()) {
+      const onlineNlu = await classifyOnline(text, this.context.currentScreen);
+      if (onlineNlu && onlineNlu.confidence > nlu.confidence) {
+        nlu = onlineNlu;
+      }
+    }
 
     // ── 4. Special handling for tutor.ask ────────────────────────────────────
     if (nlu.intent === 'tutor.ask') {
@@ -207,6 +216,17 @@ class VoiceAssistantCore {
   }
 
   private async _handleTutorQuery(question: string): Promise<string> {
+    // Try Gemini first for richer answers
+    if (isOnlineNLUAvailable()) {
+      try {
+        const answer = await askTutorOnline(question);
+        if (answer) return await this._speak(answer);
+      } catch {
+        // Fall through to offline knowledge base
+      }
+    }
+
+    // Offline fallback: fuzzy search local knowledge base
     if (!this.fuse) {
       this.fuse = new Fuse(brailleKnowledgeBase, {
         keys: ['query', 'aliases'],
@@ -216,14 +236,11 @@ class VoiceAssistantCore {
     }
 
     try {
-      let responseText = "I don't know the answer to that just yet. I am continuously learning more about Braille!";
-      
       const results = this.fuse.search(question);
       if (results.length > 0 && results[0].score !== undefined && results[0].score < 0.5) {
-        responseText = results[0].item.response;
+        return await this._speak(results[0].item.response);
       }
-
-      return await this._speak(responseText);
+      return await this._speak("I don't know the answer to that just yet. I am continuously learning more about Braille!");
     } catch {
       return await this._speak("I am having trouble accessing my knowledge base right now.");
     }

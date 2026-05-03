@@ -18,6 +18,7 @@ import MainTabNavigator from './MainTabNavigator';
 import { LessonDetailScreen } from '../screens/Lessons/LessonDetailScreen';
 import { ActiveLessonScreen } from '../screens/Lessons/ActiveLessonScreen';
 import { NotificationsScreen } from '../screens/Notifications/NotificationsScreen';
+import { BrailleConvertScreen } from '../screens/BrailleConvert/BrailleConvertScreen';
 
 export type RootStackParamList = {
   Login: undefined;
@@ -28,6 +29,7 @@ export type RootStackParamList = {
   ActiveLesson: { lessonId: string; mode?: 'lesson' | 'quickPractice' | 'challenge' };
   Notifications: undefined;
   Device: undefined;
+  BrailleConvert: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -88,6 +90,7 @@ const RootNavigator = () => {
                 options={{ gestureEnabled: false }} // Prevent swipe back during lesson
               />
               <Stack.Screen name="Notifications" component={NotificationsScreen} />
+              <Stack.Screen name="BrailleConvert" component={BrailleConvertScreen} />
             </>
           )}
         </Stack.Navigator>

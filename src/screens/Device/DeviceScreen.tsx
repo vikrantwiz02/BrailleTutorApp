@@ -29,6 +29,9 @@ import {
 } from '../../store/slices/deviceSlice';
 import { brailleService, voiceCommandService, voiceService } from '../../services';
 import type { MainTabParamList } from '../../navigation/MainTabNavigator';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../../navigation/RootNavigator';
 
 type DeviceScreenNavigationProp = BottomTabNavigationProp<MainTabParamList, 'Device'>;
 
@@ -54,6 +57,7 @@ const EDU_COLORS = {
 export const DeviceScreen: React.FC<Props> = ({ navigation }) => {
   const dispatch = useDispatch<AppDispatch>();
   const insets = useSafeAreaInsets();
+  const rootNav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const {
     connected,
     deviceInfo,
@@ -277,6 +281,30 @@ export const DeviceScreen: React.FC<Props> = ({ navigation }) => {
         </LinearGradient>
 
       <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
+
+        {/* ── Braille Converter shortcut ────────────────────────────────── */}
+        <TouchableOpacity
+          style={styles.converterCard}
+          onPress={() => rootNav.navigate('BrailleConvert')}
+          activeOpacity={0.85}
+        >
+          <LinearGradient
+            colors={[EDU_COLORS.softPurple, EDU_COLORS.richPurple]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.converterGradient}
+          >
+            <Ionicons name="language" size={32} color="#FFFFFF" />
+            <View style={styles.converterText}>
+              <Text style={styles.converterTitle}>Text → Braille Converter</Text>
+              <Text style={styles.converterSub}>
+                Upload .docx / .txt • Export PDF • Print
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.7)" />
+          </LinearGradient>
+        </TouchableOpacity>
+
         {/* Connected Device Card */}
         {connected && deviceInfo ? (
           <>
@@ -926,6 +954,32 @@ const styles = StyleSheet.create({
   etaText: {
     fontSize: 14,
     color: 'rgba(255, 255, 255, 0.6)',
+  },
+  converterCard: {
+    borderRadius: RADIUS.lg,
+    overflow: 'hidden',
+    marginBottom: SPACING.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(139, 92, 246, 0.35)',
+  },
+  converterGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: SPACING.md,
+    gap: SPACING.md,
+  },
+  converterText: {
+    flex: 1,
+  },
+  converterTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  converterSub: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.7)',
+    marginTop: 2,
   },
   scanSection: {},
   scanButton: {

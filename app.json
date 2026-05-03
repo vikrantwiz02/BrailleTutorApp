@@ -55,6 +55,7 @@
     "plugins": [
       "expo-av",
       "expo-dev-client",
+      "expo-document-picker",
       "@react-native-voice/voice",
       [
         "expo-build-properties",

@@ -122,8 +122,8 @@ export const VoiceAssistant: React.FC = () => {
     Array.from({ length: WAVEFORM_BARS }, () => new Animated.Value(0.3))
   ).current;
 
-  // Derived
-  const online = false;
+  // Derived: online when Gemini API key is configured
+  const online = Boolean(process.env.EXPO_PUBLIC_GEMINI_API_KEY);
 
   // ── Sync context to core ──────────────────────────────────────────────────
 
@@ -260,8 +260,13 @@ export const VoiceAssistant: React.FC = () => {
       listeningRef.current = true;
       setTranscript('');
       showCardFn();
+    } else if (!result.success && mountedRef.current) {
+      const msg = result.error || 'Voice recognition unavailable.';
+      setLastResponse(msg);
+      showCardFn();
+      hideCardFn(5000);
     }
-  }, [settings.voiceEnabled, showCardFn]);
+  }, [settings.voiceEnabled, showCardFn, hideCardFn]);
 
   // ── Voice event listener ──────────────────────────────────────────────────
 
@@ -373,9 +378,13 @@ export const VoiceAssistant: React.FC = () => {
       showCardFn();
       AccessibilityInfo.announceForAccessibility('Listening');
     } else {
-      await voiceService.speak(result.error || 'Voice recognition is not available.');
+      const errMsg = result.error || 'Voice recognition is not available on this device. Make sure you are using a development build.';
+      setLastResponse(errMsg);
+      showCardFn();
+      hideCardFn(6000);
+      await voiceService.speak(errMsg);
     }
-  }, [isListening, showCardFn]);
+  }, [isListening, showCardFn, hideCardFn]);
 
   // ── History panel toggle (long press) ─────────────────────────────────────
 
